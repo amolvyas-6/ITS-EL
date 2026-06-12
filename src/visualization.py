@@ -1,815 +1,830 @@
-"""
-visualization.py — Plotting & Visualization Module
-
-Generates all plots for the project:
-  1. Station graph (nodes colored by type, edges with labels)
-  2. Heatmap of crowd density over time
-  3. Animation frames of crowd distribution evolution
-  4. Before vs After optimization comparison
-  5. Transition matrix heatmap
-  6. Stationary distribution bar chart
-  7. Mean first passage time visualization
-  8. Congestion timeline
-
-All plots are saved to the outputs/ directory.
-"""
+"""Visualization pipeline for ITS traffic simulation outputs."""
 
 import os
-import numpy as np
+
 import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-from matplotlib.patches import FancyBboxPatch
 import matplotlib.patheffects as pe
 import networkx as nx
+import numpy as np
 import seaborn as sns
 
-# ─── Style Configuration ────────────────────────────────────────────────────
 
-plt.rcParams.update({
-    'figure.facecolor': '#0d1117',
-    'axes.facecolor': '#161b22',
-    'axes.edgecolor': '#30363d',
-    'axes.labelcolor': '#c9d1d9',
-    'xtick.color': '#8b949e',
-    'ytick.color': '#8b949e',
-    'text.color': '#c9d1d9',
-    'font.family': 'sans-serif',
-    'font.size': 10,
-    'axes.titlesize': 14,
-    'axes.labelsize': 11,
-    'figure.titlesize': 16,
-    'grid.color': '#21262d',
-    'grid.alpha': 0.5,
-})
+plt.rcParams.update(
+    {
+        "figure.facecolor": "#0d1117",
+        "axes.facecolor": "#161b22",
+        "axes.edgecolor": "#30363d",
+        "axes.labelcolor": "#c9d1d9",
+        "xtick.color": "#8b949e",
+        "ytick.color": "#8b949e",
+        "text.color": "#c9d1d9",
+        "font.family": "sans-serif",
+        "font.size": 10,
+        "axes.titlesize": 14,
+        "axes.labelsize": 11,
+        "figure.titlesize": 16,
+        "grid.color": "#21262d",
+        "grid.alpha": 0.5,
+    }
+)
 
-# Node type → color mapping
+
 NODE_COLORS = {
-    'entrance': '#58a6ff',   # Blue
-    'exit':     '#3fb950',   # Green
-    'gate':     '#d29922',   # Yellow/Gold
-    'corridor': '#8b949e',   # Gray
-    'platform': '#f85149',   # Red
+    "major_signalized": "#C0392B",
+    "signalized": "#E67E22",
+    "arterial_merge": "#2980B9",
+    "flyover_merge": "#16A085",
+    "destination_zone": "#27AE60",
 }
 
-# Create output directory
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'outputs')
+
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 def _save_fig(fig, filename):
-    """Save figure to outputs directory."""
     path = os.path.join(OUTPUT_DIR, filename)
-    fig.savefig(path, dpi=150, bbox_inches='tight', facecolor=fig.get_facecolor())
+    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
-    print(f"  📊 Saved: {path}")
+    print(f"  Saved: {path}")
     return path
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 1. GRAPH VISUALIZATION
-# ═══════════════════════════════════════════════════════════════════════════
+def _short_label(label, max_len=18):
+    if len(label) <= max_len:
+        return label
+    return label[: max_len - 3] + "..."
 
-def plot_graph(G, title="Metro Station Graph", filename="01_graph.png",
-               highlight_nodes=None, density=None):
-    """
-    Draw the metro station graph with nodes colored by type.
 
-    Args:
-        G: NetworkX graph.
-        title: Plot title.
-        filename: Output filename.
-        highlight_nodes: Optional dict node_id → color for highlighting.
-        density: Optional array of densities to size nodes.
-    """
+def plot_graph(
+    G,
+    title="Road Network - Intersection Graph",
+    filename="01_graph.png",
+    highlight_nodes=None,
+    density=None,
+):
+    """Draw directed road network with color-coded intersection types."""
     fig, ax = plt.subplots(1, 1, figsize=(14, 8))
 
-    pos = nx.get_node_attributes(G, 'pos')
-    labels = nx.get_node_attributes(G, 'label')
-    types = nx.get_node_attributes(G, 'node_type')
+    pos = nx.get_node_attributes(G, "pos")
+    labels = nx.get_node_attributes(G, "label")
+    types = nx.get_node_attributes(G, "node_type")
 
-    # Node colors
-    node_colors = [NODE_COLORS.get(types.get(n, 'corridor'), '#8b949e')
-                   for n in G.nodes()]
-
-    # Node sizes (based on density if provided)
     if density is not None:
-        node_sizes = 300 + density * 3000
+        density = np.asarray(density, dtype=float)
+        node_sizes = 350 + (density * 2600)
     else:
-        node_sizes = [500 if types.get(n) in ('entrance', 'exit') else 400
-                      for n in G.nodes()]
+        node_sizes = [520 if types[n] == "major_signalized" else 420 for n in G.nodes()]
 
-    # Draw edges
-    nx.draw_networkx_edges(G, pos, ax=ax,
-                           edge_color='#30363d',
-                           width=2, alpha=0.7,
-                           style='solid')
-
-    # Draw edge weight labels
-    edge_labels = nx.get_edge_attributes(G, 'weight')
-    edge_labels = {k: f"{v:.1f}" for k, v in edge_labels.items()}
-    nx.draw_networkx_edge_labels(G, pos, edge_labels,
-                                 ax=ax, font_size=7,
-                                 font_color='#484f58',
-                                 bbox=dict(boxstyle='round,pad=0.1',
-                                          facecolor='#0d1117',
-                                          edgecolor='none', alpha=0.8))
-
-    # Draw nodes
+    node_colors = [NODE_COLORS.get(types[n], "#8b949e") for n in G.nodes()]
     if highlight_nodes:
-        colors = [highlight_nodes.get(n, NODE_COLORS.get(types.get(n, 'corridor'), '#8b949e'))
-                  for n in G.nodes()]
-    else:
-        colors = node_colors
+        node_colors = [highlight_nodes.get(n, node_colors[idx]) for idx, n in enumerate(G.nodes())]
 
-    nx.draw_networkx_nodes(G, pos, ax=ax,
-                           node_color=colors,
-                           node_size=node_sizes,
-                           edgecolors='#30363d',
-                           linewidths=2)
+    edge_capacities = [edata.get("capacity", 1200) for _, _, edata in G.edges(data=True)]
+    max_capacity = max(edge_capacities) if edge_capacities else 1.0
+    edge_widths = [1.0 + 3.0 * (c / max_capacity) for c in edge_capacities]
 
-    # Draw labels
-    short_labels = {}
-    for n, label in labels.items():
-        # Shorten labels for display
-        parts = label.split()
-        if len(parts) > 2:
-            short_labels[n] = parts[0][:3] + " " + " ".join(parts[1:])
-        else:
-            short_labels[n] = label
+    nx.draw_networkx_edges(
+        G,
+        pos,
+        ax=ax,
+        edge_color="#3d4754",
+        width=edge_widths,
+        alpha=0.75,
+        arrows=G.is_directed(),
+        arrowstyle="-|>",
+        arrowsize=12,
+        connectionstyle="arc3,rad=0.05",
+    )
 
-    nx.draw_networkx_labels(G, pos, short_labels, ax=ax,
-                            font_size=7, font_weight='bold',
-                            font_color='white')
+    nx.draw_networkx_nodes(
+        G,
+        pos,
+        ax=ax,
+        node_color=node_colors,
+        node_size=node_sizes,
+        edgecolors="#d0d7de",
+        linewidths=1.3,
+    )
 
-    # Node ID labels (small)
-    id_pos = {n: (x, y - 0.35) for n, (x, y) in pos.items()}
-    id_labels = {n: f"[{n}]" for n in G.nodes()}
-    nx.draw_networkx_labels(G, id_pos, id_labels, ax=ax,
-                            font_size=6, font_color='#484f58')
+    short_labels = {n: _short_label(lbl, 16) for n, lbl in labels.items()}
+    nx.draw_networkx_labels(
+        G,
+        pos,
+        labels=short_labels,
+        ax=ax,
+        font_size=7,
+        font_color="white",
+        font_weight="bold",
+    )
 
-    # Legend
-    legend_elements = []
-    for ntype, color in NODE_COLORS.items():
-        legend_elements.append(
-            plt.scatter([], [], c=color, s=100, label=ntype.capitalize(),
-                       edgecolors='#30363d', linewidths=1.5)
+    edge_labels = {
+        (u, v): str(int(d.get("weight", 0)))
+        for u, v, d in G.edges(data=True)
+        if d.get("weight", 0) > 0
+    }
+    nx.draw_networkx_edge_labels(
+        G,
+        pos,
+        edge_labels=edge_labels,
+        ax=ax,
+        font_size=6,
+        font_color="#9fb3c8",
+        label_pos=0.45,
+        bbox={"boxstyle": "round,pad=0.15", "fc": "#0d1117", "ec": "none", "alpha": 0.7},
+    )
+
+    legend_items = []
+    for node_type, color in NODE_COLORS.items():
+        legend_items.append(
+            plt.scatter([], [], s=90, c=color, edgecolors="#d0d7de", label=node_type)
         )
-    ax.legend(handles=legend_elements, loc='upper left',
-              framealpha=0.8, facecolor='#161b22', edgecolor='#30363d',
-              fontsize=9)
+    ax.legend(
+        handles=legend_items,
+        loc="upper left",
+        framealpha=0.85,
+        facecolor="#161b22",
+        edgecolor="#30363d",
+        fontsize=8,
+    )
 
-    ax.set_title(title, fontsize=16, fontweight='bold', pad=15)
-    ax.set_xlim(-0.5, 13.0)
-    ax.set_ylim(0.5, 9.5)
-    ax.set_aspect('equal')
-    ax.axis('off')
+    ax.set_title(title, fontsize=16, fontweight="bold", pad=12)
+    ax.set_xlim(-0.02, 1.02)
+    ax.set_ylim(-0.02, 1.02)
+    ax.set_aspect("equal")
+    ax.axis("off")
 
     return _save_fig(fig, filename)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 2. CROWD DENSITY HEATMAP
-# ═══════════════════════════════════════════════════════════════════════════
-
-def plot_density_heatmap(history, node_list, G,
-                          title="Crowd Density Over Time",
-                          filename="02_density_heatmap.png"):
-    """
-    Plot a heatmap showing crowd density at each node across time steps.
-
-    Args:
-        history: Array of shape (T+1, n_nodes) — distribution over time.
-        node_list: Ordered node IDs.
-        G: Station graph (for labels).
-        title: Plot title.
-        filename: Output filename.
-    """
+def plot_density_heatmap(
+    history,
+    node_list,
+    G,
+    title="Vehicle Density (Normalized PCU) Over Signal Cycles",
+    filename="02_density_heatmap.png",
+):
+    """Plot vehicle density heatmap over time."""
     fig, ax = plt.subplots(1, 1, figsize=(16, 8))
 
-    labels = [G.nodes[n]['label'] for n in node_list]
-    H = np.array(history)
+    matrix = np.array(history)
+    labels = [_short_label(G.nodes[n]["label"], 20) for n in node_list]
 
-    # Custom colormap: dark blue → orange → bright yellow
     cmap = sns.color_palette("rocket_r", as_cmap=True)
+    image = ax.imshow(matrix.T, aspect="auto", cmap=cmap, interpolation="nearest")
 
-    im = ax.imshow(H.T, aspect='auto', cmap=cmap, interpolation='nearest')
+    ax.set_xlabel("Signal Cycle")
+    ax.set_ylabel("Intersection")
+    ax.set_title(title, fontsize=16, fontweight="bold", pad=14)
 
-    ax.set_xlabel("Time Step", fontsize=12)
-    ax.set_ylabel("Location", fontsize=12)
-    ax.set_title(title, fontsize=16, fontweight='bold', pad=15)
-
-    # Y-axis: node labels
     ax.set_yticks(range(len(labels)))
     ax.set_yticklabels(labels, fontsize=8)
 
-    # X-axis: time steps
-    n_steps = H.shape[0]
-    step_ticks = list(range(0, n_steps, max(1, n_steps // 10)))
-    ax.set_xticks(step_ticks)
-    ax.set_xticklabels([f"t={t}" for t in step_ticks])
+    step_count = matrix.shape[0]
+    ticks = list(range(0, step_count, max(1, step_count // 10)))
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([str(t) for t in ticks])
 
-    # Colorbar
-    cbar = fig.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
-    cbar.set_label("Crowd Density (probability)", fontsize=10)
-    cbar.ax.yaxis.set_tick_params(color='#8b949e')
-
-    # Annotate high density cells
-    threshold = H.max() * 0.5
-    for t in range(H.shape[0]):
-        for j in range(H.shape[1]):
-            if H[t, j] > threshold:
-                ax.text(t, j, f"{H[t, j]:.2f}", ha='center', va='center',
-                       fontsize=6, color='white', fontweight='bold')
+    cbar = fig.colorbar(image, ax=ax, shrink=0.8, pad=0.02)
+    cbar.set_label("Vehicle Density (Normalized PCU)")
 
     fig.tight_layout()
     return _save_fig(fig, filename)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 3. DISTRIBUTION EVOLUTION
-# ═══════════════════════════════════════════════════════════════════════════
-
-def plot_distribution_evolution(history, node_list, G,
-                                 title="Crowd Distribution Evolution",
-                                 filename="03_evolution.png"):
-    """
-    Plot how the crowd distribution evolves over time (line plot per node).
-
-    Args:
-        history: Array of shape (T+1, n_nodes).
-        node_list: Ordered node IDs.
-        G: Station graph.
-        title: Plot title.
-        filename: Output filename.
-    """
+def plot_distribution_evolution(
+    history,
+    node_list,
+    G,
+    title="Vehicle Density Evolution",
+    filename="03_evolution.png",
+):
+    """Plot per-intersection density evolution lines."""
     fig, axes = plt.subplots(2, 1, figsize=(14, 10), height_ratios=[3, 1])
-    H = np.array(history)
-    labels = {n: G.nodes[n]['label'] for n in G.nodes()}
-    types = {n: G.nodes[n]['node_type'] for n in G.nodes()}
 
-    time_steps = np.arange(H.shape[0])
+    matrix = np.array(history)
+    labels = {node: G.nodes[node]["label"] for node in G.nodes()}
+    types = {node: G.nodes[node]["node_type"] for node in G.nodes()}
+    timesteps = np.arange(matrix.shape[0])
 
-    # ─── Top: All nodes ───
     ax = axes[0]
     for i, node in enumerate(node_list):
-        ntype = types[node]
-        color = NODE_COLORS.get(ntype, '#8b949e')
-        alpha = 1.0 if ntype in ('corridor', 'platform') else 0.6
-        lw = 2.5 if max(H[:, i]) > 0.05 else 1.0
-        ax.plot(time_steps, H[:, i], color=color, alpha=alpha,
-                linewidth=lw, label=labels[node])
+        color = NODE_COLORS.get(types[node], "#8b949e")
+        lw = 2.4 if np.max(matrix[:, i]) > 0.06 else 1.0
+        ax.plot(
+            timesteps,
+            matrix[:, i],
+            color=color,
+            linewidth=lw,
+            alpha=0.85,
+            label=_short_label(labels[node], 18),
+        )
 
-    ax.set_xlabel("Time Step")
-    ax.set_ylabel("Crowd Density (probability)")
-    ax.set_title(title, fontsize=16, fontweight='bold')
-    ax.legend(loc='upper right', ncol=3, fontsize=7,
-              framealpha=0.8, facecolor='#161b22', edgecolor='#30363d')
-    ax.set_xlim(0, H.shape[0] - 1)
-    ax.set_ylim(0, None)
+    ax.set_xlabel("Signal Cycle")
+    ax.set_ylabel("Vehicle Density (Normalized PCU)")
+    ax.set_title(title, fontsize=16, fontweight="bold")
+    ax.set_xlim(0, matrix.shape[0] - 1)
     ax.grid(True, alpha=0.3)
+    ax.legend(
+        loc="upper right",
+        ncol=3,
+        fontsize=7,
+        framealpha=0.85,
+        facecolor="#161b22",
+        edgecolor="#30363d",
+    )
 
-    # ─── Bottom: Stacked area for key nodes ───
     ax2 = axes[1]
-    # Show only non-terminal nodes with significant density
-    key_indices = []
-    key_labels = []
-    key_colors = []
-    for i, node in enumerate(node_list):
-        if types[node] not in ('entrance',):
-            if H[:, i].max() > 0.01:
-                key_indices.append(i)
-                key_labels.append(labels[node])
-                key_colors.append(NODE_COLORS.get(types[node], '#8b949e'))
-
-    if key_indices:
-        ax2.stackplot(time_steps, *[H[:, i] for i in key_indices],
-                      labels=key_labels, colors=key_colors, alpha=0.7)
-        ax2.set_xlabel("Time Step")
-        ax2.set_ylabel("Cumulative Density")
-        ax2.set_title("Stacked Crowd Distribution", fontsize=12)
-        ax2.legend(loc='upper right', ncol=3, fontsize=6,
-                   framealpha=0.8, facecolor='#161b22', edgecolor='#30363d')
-        ax2.set_xlim(0, H.shape[0] - 1)
+    major_indices = [
+        i
+        for i, node in enumerate(node_list)
+        if types[node] in {"major_signalized", "signalized", "arterial_merge"}
+        and np.max(matrix[:, i]) > 0.015
+    ]
+    if major_indices:
+        ax2.stackplot(
+            timesteps,
+            *[matrix[:, i] for i in major_indices],
+            labels=[_short_label(labels[node_list[i]], 18) for i in major_indices],
+            colors=[NODE_COLORS.get(types[node_list[i]], "#8b949e") for i in major_indices],
+            alpha=0.7,
+        )
+        ax2.set_xlim(0, matrix.shape[0] - 1)
+        ax2.set_xlabel("Signal Cycle")
+        ax2.set_ylabel("Cum. Density")
+        ax2.set_title("Key Corridors - Stacked Vehicle Density", fontsize=12)
         ax2.grid(True, alpha=0.3)
 
     fig.tight_layout()
     return _save_fig(fig, filename)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 4. TRANSITION MATRIX HEATMAP
-# ═══════════════════════════════════════════════════════════════════════════
-
-def plot_transition_matrix(T, node_list, G,
-                            title="Transition Matrix",
-                            filename="04_transition_matrix.png"):
-    """
-    Plot the transition matrix as a heatmap.
-
-    Args:
-        T: Transition matrix (n × n).
-        node_list: Ordered node IDs.
-        G: Station graph (for labels).
-        title: Plot title.
-        filename: Output filename.
-    """
+def plot_transition_matrix(
+    T,
+    node_list,
+    G,
+    title="Vehicle Routing Probability Matrix",
+    filename="04_transition_matrix.png",
+):
+    """Render transition matrix heatmap with high-value annotations."""
     fig, ax = plt.subplots(1, 1, figsize=(12, 10))
 
-    labels = [G.nodes[n]['label'][:15] for n in node_list]
-
+    labels = [_short_label(G.nodes[n]["label"], 14) for n in node_list]
     cmap = sns.color_palette("viridis", as_cmap=True)
-    im = ax.imshow(T, cmap=cmap, vmin=0, vmax=T.max())
+    image = ax.imshow(T, cmap=cmap, vmin=0.0, vmax=float(np.max(T)))
 
     ax.set_xticks(range(len(labels)))
-    ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=7)
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
     ax.set_yticks(range(len(labels)))
     ax.set_yticklabels(labels, fontsize=7)
 
-    ax.set_xlabel("To (destination)")
-    ax.set_ylabel("From (source)")
-    ax.set_title(title, fontsize=16, fontweight='bold', pad=15)
+    ax.set_xlabel("To Intersection")
+    ax.set_ylabel("From Intersection")
+    ax.set_title(title, fontsize=16, fontweight="bold", pad=12)
 
-    # Annotate cells
     for i in range(T.shape[0]):
         for j in range(T.shape[1]):
-            if T[i, j] > 0.01:
-                color = 'white' if T[i, j] > T.max() / 2 else '#c9d1d9'
-                ax.text(j, i, f"{T[i, j]:.2f}", ha='center', va='center',
-                       fontsize=6, color=color)
+            if T[i, j] > 0.05:
+                color = "white" if T[i, j] > 0.45 else "#d5dde5"
+                ax.text(j, i, f"{T[i, j]:.2f}", ha="center", va="center", fontsize=6, color=color)
 
-    cbar = fig.colorbar(im, ax=ax, shrink=0.8)
-    cbar.set_label("Transition Probability")
+    cbar = fig.colorbar(image, ax=ax, shrink=0.8)
+    cbar.set_label("Routing Probability")
 
     fig.tight_layout()
     return _save_fig(fig, filename)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 5. STATIONARY DISTRIBUTION
-# ═══════════════════════════════════════════════════════════════════════════
-
-def plot_stationary_distribution(pi, node_list, G,
-                                  title="Stationary Distribution",
-                                  filename="05_stationary.png"):
-    """
-    Bar chart of the stationary distribution.
-
-    Args:
-        pi: Stationary distribution vector.
-        node_list: Ordered node IDs.
-        G: Station graph.
-        title: Plot title.
-        filename: Output filename.
-    """
+def plot_stationary_distribution(
+    pi,
+    node_list,
+    G,
+    title="Long-Run Intersection Utilization",
+    filename="05_stationary.png",
+):
+    """Plot long-run utilization (stationary distribution)."""
     fig, ax = plt.subplots(1, 1, figsize=(14, 6))
 
-    labels = [G.nodes[n]['label'] for n in node_list]
-    types = [G.nodes[n]['node_type'] for n in node_list]
-    colors = [NODE_COLORS.get(t, '#8b949e') for t in types]
+    labels = [_short_label(G.nodes[n]["label"], 18) for n in node_list]
+    colors = [NODE_COLORS.get(G.nodes[n]["node_type"], "#8b949e") for n in node_list]
 
-    bars = ax.bar(range(len(pi)), pi, color=colors, edgecolor='#30363d',
-                  linewidth=1, alpha=0.9)
-
+    bars = ax.bar(range(len(pi)), pi, color=colors, edgecolor="#30363d", linewidth=1.0, alpha=0.9)
     ax.set_xticks(range(len(labels)))
-    ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=8)
-    ax.set_ylabel("Stationary Probability (π)")
-    ax.set_title(title, fontsize=16, fontweight='bold', pad=15)
-    ax.grid(axis='y', alpha=0.3)
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel("Utilization Probability")
+    ax.set_title(title, fontsize=16, fontweight="bold", pad=12)
+    ax.grid(axis="y", alpha=0.3)
 
-    # Annotate values
-    for bar, val in zip(bars, pi):
-        if val > 0.01:
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.005,
-                    f"{val:.3f}", ha='center', va='bottom', fontsize=7,
-                    color='#c9d1d9')
-
-    # Legend
-    legend_elements = [plt.scatter([], [], c=c, s=80, label=t.capitalize(),
-                                   edgecolors='#30363d')
-                       for t, c in NODE_COLORS.items()]
-    ax.legend(handles=legend_elements, loc='upper right', fontsize=8,
-              framealpha=0.8, facecolor='#161b22', edgecolor='#30363d')
+    for bar, value in zip(bars, pi):
+        if value > 0.01:
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.003,
+                f"{value:.3f}",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+            )
 
     fig.tight_layout()
     return _save_fig(fig, filename)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 6. BEFORE vs AFTER COMPARISON
-# ═══════════════════════════════════════════════════════════════════════════
+def plot_comparison(
+    history_before,
+    history_after,
+    node_list,
+    G,
+    title="Pre-ATMS Intervention vs Post-ATMS Signal Optimization",
+    filename="06_comparison.png",
+):
+    """Heatmap comparison of pre/post interventions."""
+    fig, axes = plt.subplots(1, 2, figsize=(18, 8), constrained_layout=True)
 
-def plot_comparison(history_before, history_after, node_list, G,
-                     title="Before vs After Optimization",
-                     filename="06_comparison.png"):
-    """
-    Side-by-side comparison of crowd density before and after optimization.
+    matrix_before = np.array(history_before)
+    matrix_after = np.array(history_after)
+    labels = [_short_label(G.nodes[n]["label"], 18) for n in node_list]
 
-    Args:
-        history_before: Distribution history before optimization.
-        history_after: Distribution history after optimization.
-        node_list: Ordered node IDs.
-        G: Station graph.
-        title: Plot title.
-        filename: Output filename.
-    """
-    fig, axes = plt.subplots(1, 2, figsize=(18, 8))
-
-    labels = [G.nodes[n]['label'] for n in node_list]
     cmap = sns.color_palette("rocket_r", as_cmap=True)
+    vmax = float(max(np.max(matrix_before), np.max(matrix_after)))
 
-    H1 = np.array(history_before)
-    H2 = np.array(history_after)
+    image_before = axes[0].imshow(matrix_before.T, aspect="auto", cmap=cmap, vmin=0, vmax=vmax)
+    axes[0].set_title("Pre-ATMS Intervention", fontsize=14, fontweight="bold", color="#f4d03f")
+    axes[0].set_xlabel("Signal Cycle")
+    axes[0].set_ylabel("Intersection")
+    axes[0].set_yticks(range(len(labels)))
+    axes[0].set_yticklabels(labels, fontsize=7)
 
-    vmax = max(H1.max(), H2.max())
+    image_after = axes[1].imshow(matrix_after.T, aspect="auto", cmap=cmap, vmin=0, vmax=vmax)
+    axes[1].set_title("Post-ATMS Signal Optimization", fontsize=14, fontweight="bold", color="#2ecc71")
+    axes[1].set_xlabel("Signal Cycle")
+    axes[1].set_yticks(range(len(labels)))
+    axes[1].set_yticklabels(labels, fontsize=7)
 
-    # Before
-    ax = axes[0]
-    im1 = ax.imshow(H1.T, aspect='auto', cmap=cmap, vmin=0, vmax=vmax)
-    ax.set_title("BEFORE Optimization", fontsize=14, fontweight='bold',
-                 color='#f85149')
-    ax.set_xlabel("Time Step")
-    ax.set_ylabel("Location")
-    ax.set_yticks(range(len(labels)))
-    ax.set_yticklabels(labels, fontsize=7)
-
-    # After
-    ax = axes[1]
-    im2 = ax.imshow(H2.T, aspect='auto', cmap=cmap, vmin=0, vmax=vmax)
-    ax.set_title("AFTER Optimization", fontsize=14, fontweight='bold',
-                 color='#3fb950')
-    ax.set_xlabel("Time Step")
-    ax.set_yticks(range(len(labels)))
-    ax.set_yticklabels(labels, fontsize=7)
-
-    fig.colorbar(im2, ax=axes, shrink=0.6, pad=0.02,
-                 label="Crowd Density")
-
-    fig.suptitle(title, fontsize=16, fontweight='bold', y=1.02)
-    fig.tight_layout()
+    fig.colorbar(
+        image_after,
+        ax=axes,
+        shrink=0.65,
+        pad=0.02,
+        label="Vehicle Density (Normalized PCU)",
+    )
+    fig.suptitle(title, fontsize=16, fontweight="bold")
     return _save_fig(fig, filename)
 
 
-def plot_comparison_bars(pi_before, pi_after, node_list, G,
-                          title="Stationary Distribution — Before vs After",
-                          filename="07_comparison_bars.png"):
-    """
-    Grouped bar chart comparing stationary distributions.
-
-    Args:
-        pi_before: Stationary distribution before optimization.
-        pi_after: Stationary distribution after optimization.
-        node_list: Ordered node IDs.
-        G: Station graph.
-        title: Plot title.
-        filename: Output filename.
-    """
+def plot_comparison_bars(
+    pi_before,
+    pi_after,
+    node_list,
+    G,
+    title="Long-Run Intersection Utilization - Pre vs Post ATMS",
+    filename="07_comparison_bars.png",
+):
+    """Grouped bar chart for pre/post stationary utilization."""
     fig, ax = plt.subplots(1, 1, figsize=(14, 6))
 
-    labels = [G.nodes[n]['label'] for n in node_list]
-    x = np.arange(len(labels))
-    width = 0.35
+    labels = [_short_label(G.nodes[n]["label"], 18) for n in node_list]
+    xvals = np.arange(len(labels))
+    width = 0.36
 
-    bars1 = ax.bar(x - width / 2, pi_before, width,
-                   label='Before', color='#f85149', alpha=0.8,
-                   edgecolor='#30363d')
-    bars2 = ax.bar(x + width / 2, pi_after, width,
-                   label='After', color='#3fb950', alpha=0.8,
-                   edgecolor='#30363d')
+    ax.bar(
+        xvals - width / 2,
+        pi_before,
+        width,
+        label="Pre-ATMS Intervention",
+        color="#f39c12",
+        edgecolor="#30363d",
+        alpha=0.85,
+    )
+    ax.bar(
+        xvals + width / 2,
+        pi_after,
+        width,
+        label="Post-ATMS Signal Optimization",
+        color="#27ae60",
+        edgecolor="#30363d",
+        alpha=0.85,
+    )
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=8)
-    ax.set_ylabel("Stationary Probability (π)")
-    ax.set_title(title, fontsize=16, fontweight='bold', pad=15)
-    ax.legend(fontsize=10, framealpha=0.8, facecolor='#161b22',
-              edgecolor='#30363d')
-    ax.grid(axis='y', alpha=0.3)
-
-    # Annotate percentage change
-    for i in range(len(pi_before)):
-        if pi_before[i] > 1e-4:
-            change = ((pi_after[i] - pi_before[i]) / pi_before[i]) * 100
-            if abs(change) > 5:
-                color = '#3fb950' if change < 0 else '#f85149'
-                ax.text(x[i], max(pi_before[i], pi_after[i]) + 0.005,
-                        f"{change:+.0f}%", ha='center', fontsize=7,
-                        color=color, fontweight='bold')
+    ax.set_xticks(xvals)
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel("Utilization Probability")
+    ax.set_title(title, fontsize=16, fontweight="bold", pad=12)
+    ax.grid(axis="y", alpha=0.3)
+    ax.legend(fontsize=9, framealpha=0.85, facecolor="#161b22", edgecolor="#30363d")
 
     fig.tight_layout()
     return _save_fig(fig, filename)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 7. MEAN FIRST PASSAGE TIME
-# ═══════════════════════════════════════════════════════════════════════════
-
-def plot_mfpt(mfpt_before, mfpt_after, node_list, G,
-               title="Mean Steps to Exit — Before vs After",
-               filename="08_mfpt.png"):
-    """
-    Bar chart of mean first passage time to exits.
-
-    Args:
-        mfpt_before: Dict node_id → steps (before optimization).
-        mfpt_after: Dict node_id → steps (after optimization).
-        node_list: Ordered node IDs.
-        G: Station graph.
-        title: Plot title.
-        filename: Output filename.
-    """
+def plot_mfpt(
+    mfpt_before,
+    mfpt_after,
+    node_list,
+    G,
+    title="Average Network Travel Time (Signal Cycles)",
+    filename="08_mfpt.png",
+):
+    """Horizontal bar chart of ANTT before/after intervention."""
     fig, ax = plt.subplots(1, 1, figsize=(14, 6))
 
-    labels = [G.nodes[n]['label'] for n in node_list]
-    before_vals = [mfpt_before.get(n, 0) for n in node_list]
-    after_vals = [mfpt_after.get(n, 0) for n in node_list]
+    labels = [_short_label(G.nodes[n]["label"], 20) for n in node_list]
+    before_vals = [mfpt_before.get(n, 0.0) for n in node_list]
+    after_vals = [mfpt_after.get(n, 0.0) for n in node_list]
 
-    x = np.arange(len(labels))
-    width = 0.35
+    yvals = np.arange(len(labels))
+    width = 0.36
 
-    ax.barh(x - width / 2, before_vals, width,
-            label='Before', color='#f85149', alpha=0.8, edgecolor='#30363d')
-    ax.barh(x + width / 2, after_vals, width,
-            label='After', color='#3fb950', alpha=0.8, edgecolor='#30363d')
+    ax.barh(
+        yvals - width / 2,
+        before_vals,
+        width,
+        label="Pre-ATMS Intervention",
+        color="#e67e22",
+        edgecolor="#30363d",
+        alpha=0.85,
+    )
+    ax.barh(
+        yvals + width / 2,
+        after_vals,
+        width,
+        label="Post-ATMS Signal Optimization",
+        color="#2ecc71",
+        edgecolor="#30363d",
+        alpha=0.85,
+    )
 
-    ax.set_yticks(x)
+    ax.set_yticks(yvals)
     ax.set_yticklabels(labels, fontsize=8)
-    ax.set_xlabel("Expected Steps to Reach Exit")
-    ax.set_title(title, fontsize=16, fontweight='bold', pad=15)
-    ax.legend(fontsize=10, framealpha=0.8, facecolor='#161b22',
-              edgecolor='#30363d')
-    ax.grid(axis='x', alpha=0.3)
+    ax.set_xlabel("Average Network Travel Time (Signal Cycles)")
+    ax.set_title(title, fontsize=16, fontweight="bold", pad=12)
+    ax.grid(axis="x", alpha=0.3)
+    ax.legend(fontsize=9, framealpha=0.85, facecolor="#161b22", edgecolor="#30363d")
     ax.invert_yaxis()
 
     fig.tight_layout()
     return _save_fig(fig, filename)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 8. CONGESTION TIMELINE
-# ═══════════════════════════════════════════════════════════════════════════
-
-def plot_congestion_timeline(history, node_list, G, threshold=0.15,
-                              title="Congestion Timeline",
-                              filename="09_congestion_timeline.png"):
-    """
-    Timeline showing when and where congestion occurs.
-
-    Args:
-        history: Distribution history array.
-        node_list: Ordered node IDs.
-        G: Station graph.
-        threshold: Congestion threshold.
-        title: Plot title.
-        filename: Output filename.
-    """
+def plot_congestion_timeline(
+    v_c_history,
+    node_list,
+    G,
+    threshold=0.85,
+    title="Saturated Intersection Timeline",
+    filename="09_congestion_timeline.png",
+):
+    """Scatter timeline of v/c saturation events across signal cycles."""
     fig, ax = plt.subplots(1, 1, figsize=(14, 6))
 
-    H = np.array(history)
-    labels = [G.nodes[n]['label'] for n in node_list]
+    labels = [_short_label(G.nodes[n]["label"], 20) for n in node_list]
+    ratio_matrix = np.array(
+        [[float(step.get(node, 0.0)) for node in node_list] for step in v_c_history],
+        dtype=float,
+    )
 
-    # Create congestion matrix (binary: above threshold or not)
-    congested = (H > threshold).astype(float)
+    for t in range(ratio_matrix.shape[0]):
+        for j in range(ratio_matrix.shape[1]):
+            value = ratio_matrix[t, j]
+            if value > threshold:
+                ax.scatter(
+                    t,
+                    j,
+                    s=110 + (value * 130),
+                    c="#c0392b" if value > 1.0 else "#e67e22",
+                    alpha=0.65,
+                    edgecolors="#f7d9c8",
+                    linewidths=1.2,
+                )
 
-    # Plot as scatter where congested
-    for t in range(H.shape[0]):
-        for j in range(H.shape[1]):
-            if congested[t, j]:
-                size = H[t, j] * 500
-                ax.scatter(t, j, s=size, c='#f85149', alpha=0.7,
-                          edgecolors='#f8514960', linewidths=2)
+    for j in range(ratio_matrix.shape[1]):
+        ax.axhline(y=j, color="#1f2a36", linewidth=0.4)
 
-    # Add faint lines for reference
-    for j in range(H.shape[1]):
-        ax.axhline(y=j, color='#21262d', linewidth=0.5)
+    ax.axvline(0, color="#34495e", linewidth=1.0, linestyle=":")
 
-    ax.set_xlabel("Time Step")
-    ax.set_ylabel("Location")
+    ax.set_xlabel("Signal Cycle")
+    ax.set_ylabel("Intersection")
     ax.set_yticks(range(len(labels)))
     ax.set_yticklabels(labels, fontsize=8)
-    ax.set_title(f"{title} (threshold = {threshold})",
-                 fontsize=16, fontweight='bold', pad=15)
-    ax.set_xlim(-0.5, H.shape[0] - 0.5)
-
-    # Add threshold line in legend
-    ax.scatter([], [], s=100, c='#f85149', alpha=0.7,
-              label=f'Congested (>{threshold})', edgecolors='#f8514960')
-    ax.legend(fontsize=9, framealpha=0.8, facecolor='#161b22',
-              edgecolor='#30363d')
+    ax.set_xlim(-0.5, ratio_matrix.shape[0] - 0.5)
+    ax.set_title(
+        f"{title} (v/c threshold {threshold:.2f})",
+        fontsize=16,
+        fontweight="bold",
+        pad=12,
+    )
 
     fig.tight_layout()
     return _save_fig(fig, filename)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 9. SNAPSHOT FRAMES (for key timesteps)
-# ═══════════════════════════════════════════════════════════════════════════
+def plot_graph_snapshots(
+    G,
+    history,
+    node_list,
+    timesteps=None,
+    filename="10_snapshots.png",
+):
+    """Graph snapshots over selected cycles with density overlays."""
+    matrix = np.array(history)
 
-def plot_graph_snapshots(G, history, node_list, timesteps=None,
-                          filename="10_snapshots.png"):
-    """
-    Show the graph at multiple timesteps with nodes sized by density.
-
-    Args:
-        G: Station graph.
-        history: Distribution history.
-        node_list: Ordered node IDs.
-        timesteps: Which timesteps to show (default: 0, 5, 10, 15, 20).
-        filename: Output filename.
-    """
-    H = np.array(history)
     if timesteps is None:
-        max_t = H.shape[0] - 1
-        timesteps = [0, max_t // 4, max_t // 2, 3 * max_t // 4, max_t]
-        timesteps = sorted(set(timesteps))
+        max_t = matrix.shape[0] - 1
+        timesteps = sorted(set([0, max_t // 4, max_t // 2, (3 * max_t) // 4, max_t]))
 
-    n_plots = len(timesteps)
-    fig, axes = plt.subplots(1, n_plots, figsize=(5 * n_plots, 6))
-    if n_plots == 1:
+    fig, axes = plt.subplots(1, len(timesteps), figsize=(5 * len(timesteps), 6))
+    if len(timesteps) == 1:
         axes = [axes]
 
-    pos = nx.get_node_attributes(G, 'pos')
-    types = nx.get_node_attributes(G, 'node_type')
-    node_labels = nx.get_node_attributes(G, 'label')
+    pos = nx.get_node_attributes(G, "pos")
+    types = nx.get_node_attributes(G, "node_type")
 
-    for idx, t in enumerate(timesteps):
+    for idx, timestep in enumerate(timesteps):
         ax = axes[idx]
-        density = H[t]
+        density = matrix[timestep]
 
-        # Size nodes by density
-        sizes = 200 + density * 4000
-
-        # Color nodes by density (blend type color with red for congestion)
+        node_sizes = 240 + density * 3200
         colors = []
         for i, node in enumerate(node_list):
-            base_color = NODE_COLORS.get(types.get(node, 'corridor'), '#8b949e')
-            if density[i] > 0.15:
-                colors.append('#f85149')  # Red for congested
-            elif density[i] > 0.05:
-                colors.append('#d29922')  # Yellow for moderate
+            base = NODE_COLORS.get(types[node], "#8b949e")
+            if density[i] > 0.12:
+                colors.append("#e74c3c")
+            elif density[i] > 0.06:
+                colors.append("#f1c40f")
             else:
-                colors.append(base_color)
+                colors.append(base)
 
-        nx.draw_networkx_edges(G, pos, ax=ax,
-                               edge_color='#30363d', width=1.5, alpha=0.5)
-        nx.draw_networkx_nodes(G, pos, ax=ax,
-                               node_color=colors, node_size=sizes,
-                               edgecolors='#30363d', linewidths=1.5,
-                               alpha=0.9)
+        nx.draw_networkx_edges(
+            G,
+            pos,
+            ax=ax,
+            edge_color="#3d4754",
+            width=1.2,
+            alpha=0.55,
+            arrows=G.is_directed(),
+            arrowstyle="-|>",
+            arrowsize=10,
+            connectionstyle="arc3,rad=0.05",
+        )
+        nx.draw_networkx_nodes(
+            G,
+            pos,
+            ax=ax,
+            node_color=colors,
+            node_size=node_sizes,
+            edgecolors="#d0d7de",
+            linewidths=1.1,
+            alpha=0.9,
+        )
 
-        # Show density values on nodes
         for i, node in enumerate(node_list):
-            if density[i] > 0.01:
+            if density[i] > 0.015:
                 x, y = pos[node]
-                ax.text(x, y, f"{density[i]:.2f}", ha='center', va='center',
-                       fontsize=6, color='white', fontweight='bold',
-                       path_effects=[pe.withStroke(linewidth=2, foreground='black')])
+                ax.text(
+                    x,
+                    y,
+                    f"{density[i]:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=6,
+                    color="white",
+                    fontweight="bold",
+                    path_effects=[pe.withStroke(linewidth=1.7, foreground="black")],
+                )
 
-        ax.set_title(f"t = {t}", fontsize=12, fontweight='bold')
-        ax.axis('off')
-        ax.set_xlim(-0.5, 13.0)
-        ax.set_ylim(0.5, 9.5)
+        ax.set_title(f"Cycle {timestep}", fontsize=11, fontweight="bold")
+        ax.set_xlim(-0.02, 1.02)
+        ax.set_ylim(-0.02, 1.02)
+        ax.axis("off")
 
-    fig.suptitle("Crowd Distribution Snapshots", fontsize=16,
-                 fontweight='bold', y=1.02)
+    fig.suptitle("Vehicle Density Snapshots Across Signal Cycles", fontsize=16, fontweight="bold")
     fig.tight_layout()
     return _save_fig(fig, filename)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 10. ADJACENCY + WEIGHT MATRIX VISUALIZATION
-# ═══════════════════════════════════════════════════════════════════════════
-
-def plot_adjacency_matrix(A, node_list, G,
-                           title="Adjacency Matrix",
-                           filename="11_adjacency_matrix.png"):
-    """
-    Plot the adjacency matrix as a heatmap.
-    """
+def plot_adjacency_matrix(
+    adjacency,
+    node_list,
+    G,
+    title="Directed Adjacency Matrix",
+    filename="11_adjacency_matrix.png",
+):
+    """Plot directed adjacency matrix."""
     fig, ax = plt.subplots(1, 1, figsize=(10, 8))
-    labels = [G.nodes[n]['label'][:12] for n in node_list]
 
+    labels = [_short_label(G.nodes[n]["label"], 12) for n in node_list]
     cmap = sns.color_palette("YlOrRd", as_cmap=True)
-    im = ax.imshow(A, cmap=cmap)
+    image = ax.imshow(adjacency, cmap=cmap, vmin=0, vmax=1)
 
     ax.set_xticks(range(len(labels)))
-    ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=7)
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
     ax.set_yticks(range(len(labels)))
     ax.set_yticklabels(labels, fontsize=7)
-    ax.set_title(title, fontsize=16, fontweight='bold', pad=15)
+    ax.set_title(title, fontsize=16, fontweight="bold", pad=12)
 
-    for i in range(A.shape[0]):
-        for j in range(A.shape[1]):
-            if A[i, j] > 0:
-                ax.text(j, i, f"{A[i,j]:.0f}", ha='center', va='center',
-                       fontsize=7, color='white' if A[i,j] > 0.5 else '#c9d1d9')
+    for i in range(adjacency.shape[0]):
+        for j in range(adjacency.shape[1]):
+            if adjacency[i, j] > 0:
+                ax.text(j, i, "1", ha="center", va="center", fontsize=6, color="white")
 
-    fig.colorbar(im, ax=ax, shrink=0.8)
+    fig.colorbar(image, ax=ax, shrink=0.8, label="Connectivity")
     fig.tight_layout()
     return _save_fig(fig, filename)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# MASTER PLOT FUNCTION
-# ═══════════════════════════════════════════════════════════════════════════
+def plot_v_c_ratio_timeline(
+    v_c_history_before,
+    v_c_history_after,
+    node_list,
+    G,
+    title="v/c Ratio Timeline - Top Congested Intersections",
+    filename="v_c_ratio_timeline.png",
+):
+    """Plot v/c ratios for top 5 congested nodes before and after optimization."""
+    fig, ax = plt.subplots(1, 1, figsize=(14, 7))
 
-def generate_all_plots(G, sim_before, sim_after, T_before, T_after,
-                        node_list, pi_before, pi_after,
-                        mfpt_before, mfpt_after):
-    """
-    Generate all visualization plots for the project.
+    peak_before = {}
+    for node in node_list:
+        series = [float(step.get(node, 0.0)) for step in v_c_history_before]
+        peak_before[node] = max(series) if series else 0.0
 
-    Args:
-        G: Station graph.
-        sim_before: Simulation before optimization.
-        sim_after: Simulation after optimization.
-        T_before: Transition matrix before.
-        T_after: Transition matrix after.
-        node_list: Ordered node IDs.
-        pi_before: Stationary distribution before.
-        pi_after: Stationary distribution after.
-        mfpt_before: MFPT before.
-        mfpt_after: MFPT after.
-    """
+    top_nodes = [
+        node for node, _ in sorted(peak_before.items(), key=lambda item: item[1], reverse=True)[:5]
+    ]
+
+    palette = sns.color_palette("tab10", n_colors=max(5, len(top_nodes)))
+    x_before = np.arange(len(v_c_history_before))
+    x_after = np.arange(len(v_c_history_after))
+
+    for idx, node in enumerate(top_nodes):
+        label = _short_label(G.nodes[node]["label"], 22)
+        before_series = [float(step.get(node, 0.0)) for step in v_c_history_before]
+        after_series = [float(step.get(node, 0.0)) for step in v_c_history_after]
+
+        ax.plot(
+            x_before,
+            before_series,
+            color=palette[idx],
+            linewidth=2.0,
+            label=f"{label} - Pre-ATMS",
+        )
+        ax.plot(
+            x_after,
+            after_series,
+            color=palette[idx],
+            linewidth=2.0,
+            linestyle="--",
+            label=f"{label} - Post-ATMS",
+        )
+
+    ax.axhline(0.85, color="#f39c12", linestyle="--", linewidth=1.5, label="Saturation Threshold (0.85)")
+    ax.axhline(1.00, color="#e74c3c", linestyle="--", linewidth=1.5, label="Over-Capacity Threshold (1.0)")
+
+    xmax = max(len(v_c_history_before), len(v_c_history_after)) - 1
+    ax.text(xmax, 0.86, "0.85", color="#f39c12", fontsize=9, va="bottom", ha="right")
+    ax.text(xmax, 1.01, "1.0", color="#e74c3c", fontsize=9, va="bottom", ha="right")
+
+    ax.set_xlabel("Signal Cycle (time step)")
+    ax.set_ylabel("v/c Ratio")
+    ax.set_title(title, fontsize=16, fontweight="bold", pad=12)
+    ax.grid(True, alpha=0.28)
+    ax.legend(
+        fontsize=8,
+        ncol=2,
+        framealpha=0.85,
+        facecolor="#161b22",
+        edgecolor="#30363d",
+        loc="upper right",
+    )
+
+    fig.tight_layout()
+    return _save_fig(fig, filename)
+
+
+def generate_all_plots(
+    G,
+    sim_before,
+    sim_after,
+    T_before,
+    T_after,
+    node_list,
+    pi_before,
+    pi_after,
+    mfpt_before,
+    mfpt_after,
+):
+    """Generate full traffic analysis plot suite in outputs/."""
     from src.graph_model import get_adjacency_matrix
 
-    print("\n" + "═" * 60)
-    print("  GENERATING VISUALIZATIONS")
-    print("═" * 60)
+    print("\n" + "=" * 60)
+    print("  GENERATING TRAFFIC ANALYSIS VISUALS")
+    print("=" * 60)
 
-    # 1. Graph
-    plot_graph(G, title="Metro Station — Graph Model")
+    plot_graph(G, title="Road Network - Intersection Graph")
 
-    # 2. Adjacency matrix
-    A, _ = get_adjacency_matrix(G)
-    plot_adjacency_matrix(A, node_list, G)
+    adjacency, _ = get_adjacency_matrix(G)
+    plot_adjacency_matrix(adjacency, node_list, G)
 
-    # 3. Transition matrix (before)
-    plot_transition_matrix(T_before, node_list, G,
-                           title="Transition Matrix (Original)",
-                           filename="04a_transition_original.png")
+    plot_transition_matrix(
+        T_before,
+        node_list,
+        G,
+        title="Vehicle Routing Probability Matrix - Pre-ATMS Intervention",
+        filename="04a_transition_original.png",
+    )
+    plot_transition_matrix(
+        T_after,
+        node_list,
+        G,
+        title="Vehicle Routing Probability Matrix - Post-ATMS Signal Optimization",
+        filename="04b_transition_optimized.png",
+    )
 
-    # 4. Transition matrix (after)
-    plot_transition_matrix(T_after, node_list, G,
-                           title="Transition Matrix (Optimized)",
-                           filename="04b_transition_optimized.png")
+    plot_density_heatmap(
+        sim_before.history,
+        node_list,
+        G,
+        title="Vehicle Density Heatmap - Pre-ATMS Intervention",
+        filename="02a_density_before.png",
+    )
+    plot_density_heatmap(
+        sim_after.history,
+        node_list,
+        G,
+        title="Vehicle Density Heatmap - Post-ATMS Signal Optimization",
+        filename="02b_density_after.png",
+    )
 
-    # 5. Density heatmap (before)
-    plot_density_heatmap(sim_before.history, node_list, G,
-                          title="Crowd Density — Before Optimization",
-                          filename="02a_density_before.png")
+    plot_distribution_evolution(
+        sim_before.history,
+        node_list,
+        G,
+        title="Vehicle Density Evolution - Pre-ATMS Intervention",
+        filename="03a_evolution_before.png",
+    )
+    plot_distribution_evolution(
+        sim_after.history,
+        node_list,
+        G,
+        title="Vehicle Density Evolution - Post-ATMS Signal Optimization",
+        filename="03b_evolution_after.png",
+    )
 
-    # 6. Density heatmap (after)
-    plot_density_heatmap(sim_after.history, node_list, G,
-                          title="Crowd Density — After Optimization",
-                          filename="02b_density_after.png")
+    plot_stationary_distribution(
+        pi_before,
+        node_list,
+        G,
+        title="Long-Run Intersection Utilization - Pre-ATMS Intervention",
+        filename="05a_stationary_before.png",
+    )
+    plot_stationary_distribution(
+        pi_after,
+        node_list,
+        G,
+        title="Long-Run Intersection Utilization - Post-ATMS Signal Optimization",
+        filename="05b_stationary_after.png",
+    )
 
-    # 7. Distribution evolution (before)
-    plot_distribution_evolution(sim_before.history, node_list, G,
-                                 title="Distribution Evolution — Before",
-                                 filename="03a_evolution_before.png")
-
-    # 8. Distribution evolution (after)
-    plot_distribution_evolution(sim_after.history, node_list, G,
-                                 title="Distribution Evolution — After",
-                                 filename="03b_evolution_after.png")
-
-    # 9. Stationary distribution (before)
-    plot_stationary_distribution(pi_before, node_list, G,
-                                  title="Stationary Distribution — Original",
-                                  filename="05a_stationary_before.png")
-
-    # 10. Stationary distribution (after)
-    plot_stationary_distribution(pi_after, node_list, G,
-                                  title="Stationary Distribution — Optimized",
-                                  filename="05b_stationary_after.png")
-
-    # 11. Side-by-side comparison
     plot_comparison(sim_before.history, sim_after.history, node_list, G)
-
-    # 12. Comparison bars
     plot_comparison_bars(pi_before, pi_after, node_list, G)
 
-    # 13. MFPT comparison
-    plot_mfpt(mfpt_before, mfpt_after, node_list, G)
+    plot_mfpt(
+        mfpt_before,
+        mfpt_after,
+        node_list,
+        G,
+        title="Average Network Travel Time (Signal Cycles)",
+        filename="08_mfpt.png",
+    )
 
-    # 14. Congestion timeline (before)
-    plot_congestion_timeline(sim_before.history, node_list, G,
-                              title="Congestion Timeline — Before",
-                              filename="09a_congestion_before.png")
+    plot_congestion_timeline(
+        sim_before.v_c_history,
+        node_list,
+        G,
+        title="Saturated Intersection Timeline - Pre-ATMS Intervention",
+        filename="09a_congestion_before.png",
+    )
+    plot_congestion_timeline(
+        sim_after.v_c_history,
+        node_list,
+        G,
+        title="Saturated Intersection Timeline - Post-ATMS Signal Optimization",
+        filename="09b_congestion_after.png",
+    )
 
-    # 15. Congestion timeline (after)
-    plot_congestion_timeline(sim_after.history, node_list, G,
-                              title="Congestion Timeline — After",
-                              filename="09b_congestion_after.png")
+    plot_graph_snapshots(G, sim_before.history, node_list, filename="10a_snapshots_before.png")
+    plot_graph_snapshots(G, sim_after.history, node_list, filename="10b_snapshots_after.png")
 
-    # 16. Snapshots (before)
-    plot_graph_snapshots(G, sim_before.history, node_list,
-                          filename="10a_snapshots_before.png")
+    plot_v_c_ratio_timeline(
+        sim_before.v_c_history,
+        sim_after.v_c_history,
+        node_list,
+        G,
+        filename="v_c_ratio_timeline.png",
+    )
 
-    # 17. Snapshots (after)
-    plot_graph_snapshots(G, sim_after.history, node_list,
-                          filename="10b_snapshots_after.png")
-
-    print("\n  ✅ All plots generated in outputs/ directory")
-    print("═" * 60)
+    print("\n  All plots generated in outputs/")
+    print("=" * 60)

@@ -1,101 +1,95 @@
-"""
-simulation.py — Crowd Movement Simulation Engine
-
-Simulates discrete-time crowd movement through the metro station graph
-using the Markov chain model.
-
-The simulation:
-  1. Initializes a crowd distribution P_0 (people at various nodes)
-  2. Evolves the distribution: P_{t+1} = P_t · T
-  3. Tracks crowd density at every node over time
-  4. Identifies congestion points (nodes with high density)
-  5. Computes convergence metrics
-
-Key concepts:
-  - P_t is a probability distribution vector over nodes
-  - T is the transition matrix
-  - The product P_t · T redistributes the crowd according to
-    movement probabilities
-"""
+"""Traffic simulation engine for time-stepped Markov vehicle flow."""
 
 import numpy as np
+
+from src.graph_model import ROAD_CAPACITY
 from src.markov_model import (
-    compute_stationary_distribution,
     compute_mean_first_passage_time,
+    compute_stationary_distribution,
+    compute_volume_capacity_ratio,
     validate_transition_matrix,
 )
 
 
+SATURATION_THRESHOLD = 0.85
+OVER_CAPACITY_THRESHOLD = 1.0
+OPERATIONAL_CAPACITY_FACTORS = {
+    "major_signalized": 0.55,
+    "signalized": 0.28,
+    "arterial_merge": 0.80,
+    "flyover_merge": 0.85,
+    "destination_zone": 1.0,
+}
+
+
+def build_operational_capacity_dict(graph, node_list):
+    """Convert geometric node capacity into operational peak-hour capacity."""
+    capacity_dict = {}
+
+    for node in node_list:
+        node_type = graph.nodes[node]["node_type"]
+        nominal_capacity = float(ROAD_CAPACITY.get(node, 2400))
+        factor = OPERATIONAL_CAPACITY_FACTORS.get(node_type, 1.0)
+        capacity_dict[node] = nominal_capacity * factor
+
+    return capacity_dict
+
+
 class CrowdSimulation:
-    """
-    Discrete-time Markov chain simulation of crowd movement.
+    """Deterministic Markov simulation of vehicle density over intersections."""
 
-    Attributes:
-        T (np.ndarray): Transition matrix (n × n).
-        node_list (list): Ordered node IDs.
-        G (nx.Graph): The station graph.
-        n_nodes (int): Number of nodes.
-        history (list): List of distribution vectors P_0, P_1, ..., P_T.
-        congestion_threshold (float): Density above which a node is congested.
-    """
-
-    def __init__(self, G, T, node_list, congestion_threshold=0.15):
-        """
-        Initialize the simulation.
-
-        Args:
-            G: The station graph (NetworkX).
-            T: Row-stochastic transition matrix.
-            node_list: Ordered node IDs matching T's rows/columns.
-            congestion_threshold: Fraction of crowd above which congestion
-                is flagged.
-        """
+    def __init__(self, G, T, node_list, congestion_threshold=SATURATION_THRESHOLD):
         self.G = G
         self.T = T
         self.node_list = node_list
         self.n_nodes = len(node_list)
         self.congestion_threshold = congestion_threshold
+
         self.history = []
-        self.labels = {n: G.nodes[n]['label'] for n in G.nodes()}
+        self.v_c_history = []
+        self.saturated_history = []
+        self.over_capacity_history = []
+
+        self.labels = {node: G.nodes[node]["label"] for node in G.nodes()}
+        self.capacity_dict = build_operational_capacity_dict(G, self.node_list)
 
         validate_transition_matrix(T, "Simulation T")
 
-    def set_initial_distribution(self, P0=None, mode="entrances"):
-        """
-        Set the initial crowd distribution.
+    def _record_timestep_metrics(self, distribution):
+        ratios = compute_volume_capacity_ratio(distribution, self.capacity_dict)
+        saturated_nodes = [node for node, ratio in ratios.items() if ratio > SATURATION_THRESHOLD]
+        over_capacity_nodes = [node for node, ratio in ratios.items() if ratio > OVER_CAPACITY_THRESHOLD]
 
-        Args:
-            P0 (np.ndarray, optional): Custom initial distribution.
-            mode (str): How to initialize if P0 is not given:
-                - "entrances": Concentrate at entrance nodes
-                - "uniform": Equal distribution across all nodes
-                - "random": Random distribution
+        self.v_c_history.append(ratios)
+        self.saturated_history.append(saturated_nodes)
+        self.over_capacity_history.append(over_capacity_nodes)
 
-        Returns:
-            P0 (np.ndarray): The initial distribution vector.
-        """
+    def set_initial_distribution(self, P0=None, mode="peak_hour_origins"):
+        """Set initial vehicle distribution for the scenario."""
         if P0 is not None:
+            P0 = np.asarray(P0, dtype=float)
             assert len(P0) == self.n_nodes
             assert np.isclose(P0.sum(), 1.0), "P0 must sum to 1"
             self.history = [P0.copy()]
+            self.v_c_history = []
+            self.saturated_history = []
+            self.over_capacity_history = []
+            self._record_timestep_metrics(P0)
             return P0
 
-        if mode == "entrances":
-            P0 = np.zeros(self.n_nodes)
-            entrance_indices = []
-            for i, node in enumerate(self.node_list):
-                if self.G.nodes[node]['node_type'] == 'entrance':
-                    entrance_indices.append(i)
-
-            if entrance_indices:
-                prob = 1.0 / len(entrance_indices)
-                for idx in entrance_indices:
-                    P0[idx] = prob
-            else:
-                P0 = np.ones(self.n_nodes) / self.n_nodes
+        if mode in {"peak_hour_origins", "entrances"}:
+            P0 = np.zeros(self.n_nodes, dtype=float)
+            initial_mass = {
+                0: 0.35,
+                9: 0.30,
+                6: 0.20,
+                4: 0.15,
+            }
+            for idx, node in enumerate(self.node_list):
+                P0[idx] = initial_mass.get(node, 0.0)
 
         elif mode == "uniform":
-            P0 = np.ones(self.n_nodes) / self.n_nodes
+            P0 = np.ones(self.n_nodes, dtype=float) / self.n_nodes
 
         elif mode == "random":
             P0 = np.random.dirichlet(np.ones(self.n_nodes))
@@ -103,227 +97,173 @@ class CrowdSimulation:
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
+        P0 = P0 / P0.sum()
         self.history = [P0.copy()]
+        self.v_c_history = []
+        self.saturated_history = []
+        self.over_capacity_history = []
+        self._record_timestep_metrics(P0)
         return P0
 
     def step(self):
-        """
-        Advance the simulation by one time step.
-
-        Computes P_{t+1} = P_t · T
-
-        Returns:
-            P_new (np.ndarray): The new distribution vector.
-        """
+        """Advance one signal-cycle step using P_{t+1} = P_t * T."""
         P_current = self.history[-1]
-        P_new = P_current @ self.T
-        self.history.append(P_new)
-        return P_new
+        P_next = P_current @ self.T
+        self.history.append(P_next)
+        self._record_timestep_metrics(P_next)
+        return P_next
 
-    def run(self, n_steps=20):
-        """
-        Run the simulation for n_steps time steps.
-
-        Args:
-            n_steps (int): Number of discrete time steps.
-
-        Returns:
-            history (np.ndarray): Array of shape (n_steps+1, n_nodes)
-                containing all distribution vectors.
-        """
+    def run(self, n_steps=30):
+        """Run simulation for n_steps signal cycles."""
         for _ in range(n_steps):
             self.step()
         return np.array(self.history)
 
     def get_history_matrix(self):
-        """Return the full history as a 2D numpy array."""
+        """Return all state vectors stacked by timestep."""
         return np.array(self.history)
 
     def get_congestion_report(self, timestep=-1):
-        """
-        Identify congested nodes at a given timestep.
-
-        Args:
-            timestep (int): Which timestep to analyze (-1 = latest).
-
-        Returns:
-            report (list of dict): Congestion data for each node,
-                sorted by density descending.
-        """
-        P = self.history[timestep]
+        """Return node-wise density and v/c status at a timestep."""
+        distribution = self.history[timestep]
+        ratios = self.v_c_history[timestep]
         report = []
 
         for i, node in enumerate(self.node_list):
-            label = self.labels.get(node, f"Node {node}")
-            ntype = self.G.nodes[node]['node_type']
-            density = P[i]
-            is_congested = density > self.congestion_threshold
+            report.append(
+                {
+                    "node_id": node,
+                    "label": self.labels.get(node, f"Node {node}"),
+                    "type": self.G.nodes[node]["node_type"],
+                    "density": float(distribution[i]),
+                    "v_c_ratio": float(ratios[node]),
+                    "saturated": ratios[node] > SATURATION_THRESHOLD,
+                    "over_capacity": ratios[node] > OVER_CAPACITY_THRESHOLD,
+                }
+            )
 
-            report.append({
-                'node_id': node,
-                'label': label,
-                'type': ntype,
-                'density': density,
-                'congested': is_congested,
-            })
-
-        report.sort(key=lambda x: x['density'], reverse=True)
+        report.sort(key=lambda row: row["v_c_ratio"], reverse=True)
         return report
 
     def get_peak_congestion_over_time(self):
-        """
-        Find the peak density at each node across all timesteps.
-
-        Returns:
-            peaks (dict): node_id → (peak_density, timestep_of_peak).
-        """
-        H = np.array(self.history)
+        """Return peak density and timestep for each node (legacy metric)."""
+        history_matrix = np.array(self.history)
         peaks = {}
-
         for i, node in enumerate(self.node_list):
-            col = H[:, i]
-            peak_t = int(np.argmax(col))
-            peak_val = col[peak_t]
-            peaks[node] = (peak_val, peak_t)
+            column = history_matrix[:, i]
+            peak_t = int(np.argmax(column))
+            peaks[node] = (float(column[peak_t]), peak_t)
+        return peaks
 
+    def get_peak_vc_over_time(self, start_timestep=0):
+        """Return peak v/c ratio and timestep for each node from a given timestep onward."""
+        peaks = {}
+        for node in self.node_list:
+            node_series = [ratios[node] for ratios in self.v_c_history[start_timestep:]]
+            if not node_series:
+                peaks[node] = (0.0, start_timestep)
+                continue
+            local_peak_idx = int(np.argmax(node_series))
+            peak_t = local_peak_idx + start_timestep
+            peaks[node] = (float(node_series[local_peak_idx]), peak_t)
         return peaks
 
     def compute_convergence(self, tolerance=1e-6):
-        """
-        Check if the distribution has converged (reached stationary state).
-
-        Returns:
-            converged_step (int or None): First step where convergence
-                was detected, or None if not converged.
-        """
-        H = np.array(self.history)
-        for t in range(1, len(H)):
-            diff = np.max(np.abs(H[t] - H[t - 1]))
+        """Return first timestep where max state delta falls below tolerance."""
+        history_matrix = np.array(self.history)
+        for t in range(1, len(history_matrix)):
+            diff = np.max(np.abs(history_matrix[t] - history_matrix[t - 1]))
             if diff < tolerance:
                 return t
         return None
 
     def compute_total_flow_through(self):
-        """
-        Compute the total flow through each node over the simulation.
-
-        This is the sum of the density at each node across all time steps,
-        representing how much "traffic" the node sees.
-
-        Returns:
-            flow (dict): node_id → total flow.
-        """
-        H = np.array(self.history)
-        flow = {}
-        for i, node in enumerate(self.node_list):
-            flow[node] = float(H[:, i].sum())
-        return flow
+        """Return cumulative vehicle density-throughput per node."""
+        history_matrix = np.array(self.history)
+        return {
+            node: float(history_matrix[:, i].sum())
+            for i, node in enumerate(self.node_list)
+        }
 
     def print_summary(self, n_steps=None):
-        """Print a summary of the simulation results."""
+        """Print scenario summary with traffic and ANTT semantics."""
         if n_steps is None:
             n_steps = len(self.history) - 1
 
         print("\n" + "=" * 60)
-        print(f"SIMULATION SUMMARY — {n_steps} TIME STEPS")
+        print(f"SIMULATION SUMMARY - {n_steps} SIGNAL CYCLES")
         print("=" * 60)
 
-        # Initial distribution
-        P0 = self.history[0]
-        print("\n  Initial Distribution (P₀):")
+        p0 = self.history[0]
+        print("\n  Initial Vehicle Distribution (t=0):")
         for i, node in enumerate(self.node_list):
-            if P0[i] > 1e-6:
-                print(f"    {self.labels[node]:20s}: {P0[i]:.4f}")
+            if p0[i] > 1e-6:
+                print(f"    {self.labels[node]:28s}: {p0[i]:.4f}")
 
-        # Final distribution
-        P_final = self.history[-1]
-        print(f"\n  Final Distribution (P_{n_steps}):")
-        sorted_indices = np.argsort(P_final)[::-1]
-        for idx in sorted_indices:
-            if P_final[idx] > 1e-6:
-                node = self.node_list[idx]
-                bar = "█" * int(P_final[idx] * 40)
-                print(f"    {self.labels[node]:20s}: {P_final[idx]:.4f}  {bar}")
+        final_report = self.get_congestion_report(timestep=-1)
+        print("\n  Final Step - Top v/c Ratios:")
+        for row in final_report[:8]:
+            print(
+                f"    {row['label']:28s}: density={row['density']:.4f}, "
+                f"v/c={row['v_c_ratio']:.3f}"
+            )
 
-        # Congestion
-        print(f"\n  Congestion Analysis (threshold = {self.congestion_threshold}):")
-        report = self.get_congestion_report()
-        congested = [r for r in report if r['congested']]
-        if congested:
-            for r in congested:
-                print(f"    ⚠ {r['label']:20s}: density = {r['density']:.4f}")
-        else:
-            print("    ✓ No congestion detected")
-
-        # Convergence
         conv = self.compute_convergence()
         if conv is not None:
-            print(f"\n  Convergence: reached stationary state at step {conv}")
+            print(f"\n  Convergence: reached at cycle {conv}")
         else:
-            print(f"\n  Convergence: not yet converged after {n_steps} steps")
+            print(f"\n  Convergence: not reached in {n_steps} cycles")
 
-        # Stationary distribution
         pi = compute_stationary_distribution(self.T)
-        print("\n  Stationary Distribution (π):")
-        sorted_pi = np.argsort(pi)[::-1]
-        for idx in sorted_pi:
-            if pi[idx] > 1e-6:
-                node = self.node_list[idx]
-                bar = "█" * int(pi[idx] * 40)
-                print(f"    {self.labels[node]:20s}: {pi[idx]:.6f}  {bar}")
+        destination_nodes = [
+            node
+            for node in self.G.nodes()
+            if self.G.nodes[node]["node_type"] == "destination_zone"
+        ]
+        mfpt = compute_mean_first_passage_time(self.T, destination_nodes, self.node_list)
 
-        # Mean first passage time to exits
-        exit_nodes = [n for n in self.G.nodes()
-                      if self.G.nodes[n]['node_type'] == 'exit']
-        mfpt = compute_mean_first_passage_time(self.T, exit_nodes, self.node_list)
-        print("\n  Mean Steps to Exit:")
-        sorted_mfpt = sorted(mfpt.items(), key=lambda x: x[1], reverse=True)
-        for node, steps in sorted_mfpt:
+        print("\n  Average Network Travel Time (Signal Cycles):")
+        for node, steps in sorted(mfpt.items(), key=lambda item: item[1], reverse=True):
             if steps > 0:
-                print(f"    {self.labels[node]:20s}: {steps:.2f} steps")
+                print(f"    {self.labels[node]:28s}: {steps:.2f}")
 
         print("\n" + "=" * 60)
 
         return {
-            'stationary': pi,
-            'mfpt': mfpt,
-            'convergence_step': conv,
+            "stationary": pi,
+            "mfpt": mfpt,
+            "convergence_step": conv,
+            "v_c_history": self.v_c_history,
+            "saturated_nodes": self.saturated_history,
+            "over_capacity_nodes": self.over_capacity_history,
         }
 
 
-def run_scenario(G, T, node_list, n_steps=20, init_mode="entrances",
-                 P0=None, label="Default"):
-    """
-    Convenience function to run a complete simulation scenario.
-
-    Args:
-        G: Station graph.
-        T: Transition matrix.
-        node_list: Ordered node IDs.
-        n_steps: Number of time steps.
-        init_mode: Initialization mode.
-        P0: Custom initial distribution.
-        label: Scenario label for printing.
-
-    Returns:
-        sim (CrowdSimulation): The completed simulation object.
-    """
-    print(f"\n{'━' * 60}")
+def run_scenario(
+    G,
+    T,
+    node_list,
+    n_steps=30,
+    init_mode="peak_hour_origins",
+    P0=None,
+    label="Default",
+):
+    """Convenience wrapper to run and summarize one traffic scenario."""
+    print("\n" + "=" * 60)
     print(f"  SCENARIO: {label}")
-    print(f"{'━' * 60}")
+    print("=" * 60)
 
-    sim = CrowdSimulation(G, T, node_list)
-    sim.set_initial_distribution(P0=P0, mode=init_mode)
-    sim.run(n_steps)
-    results = sim.print_summary(n_steps)
-
-    return sim
+    simulation = CrowdSimulation(G, T, node_list)
+    simulation.set_initial_distribution(P0=P0, mode=init_mode)
+    simulation.run(n_steps)
+    simulation.print_summary(n_steps)
+    return simulation
 
 
 if __name__ == "__main__":
-    from graph_model import build_graph
-    from markov_model import build_transition_matrix_biased
+    from src.graph_model import build_graph
+    from src.markov_model import build_transition_matrix_congestion_biased
 
-    G = build_graph()
-    T, node_list = build_transition_matrix_biased(G)
-    sim = run_scenario(G, T, node_list, n_steps=20, label="Biased Flow")
+    graph = build_graph()
+    transition_matrix, nodes = build_transition_matrix_congestion_biased(graph)
+    run_scenario(graph, transition_matrix, nodes, n_steps=30, label="Traffic Baseline")

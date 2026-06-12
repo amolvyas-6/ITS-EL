@@ -3,31 +3,32 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Crowd Movement Simulation — Interactive Dashboard</title>
-    <meta name="description" content="Interactive visualization of crowd movement simulation using Markov Chains and Graph Theory for a metro station environment.">
+    <title>ITS Traffic Management Dashboard — Bengaluru ORR</title>
+    <meta name="description" content="Interactive ATMS dashboard for Bengaluru Outer Ring Road traffic routing, v/c monitoring, detector feeds, and ITS evaluation.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- ═══ HEADER ═══ -->
     <header id="main-header">
         <div class="header-content">
             <div class="header-left">
                 <div class="logo-icon">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M12 2v4m0 12v4M2 12h4m12 0h4"/>
-                        <path d="m4.93 4.93 2.83 2.83m8.48 8.48 2.83 2.83M4.93 19.07l2.83-2.83m8.48-8.48 2.83-2.83"/>
+                        <path d="M4 17h16"/>
+                        <path d="M6 17V9l3-3 3 3v8"/>
+                        <path d="M12 17V7l3-2 3 2v10"/>
                     </svg>
                 </div>
                 <div>
-                    <h1>Crowd Movement Simulation</h1>
-                    <p class="subtitle">Markov Chains & Graph Theory — Metro Station Model</p>
+                    <h1>ITS Traffic Management Dashboard</h1>
+                    <p class="subtitle">Bengaluru Outer Ring Road — Adaptive Traffic Management System</p>
                 </div>
             </div>
             <div class="header-right">
+                <div class="context-pill">08:00–09:00 IST Peak Hour</div>
+                <div class="context-pill">Silk Board → Whitefield Corridor</div>
                 <div class="header-badge" id="status-badge">
                     <span class="pulse"></span>
                     Loading Data...
@@ -36,49 +37,46 @@
         </div>
     </header>
 
-    <!-- ═══ MAIN CONTENT ═══ -->
     <main id="app-main">
-        <!-- ─── Stats Bar ─── -->
         <section class="stats-bar" id="stats-bar">
             <div class="stat-card" id="stat-nodes">
                 <div class="stat-value">—</div>
-                <div class="stat-label">Nodes</div>
+                <div class="stat-label">Intersections</div>
             </div>
             <div class="stat-card" id="stat-edges">
                 <div class="stat-value">—</div>
-                <div class="stat-label">Edges</div>
+                <div class="stat-label">Directed Segments</div>
             </div>
             <div class="stat-card" id="stat-steps">
                 <div class="stat-value">—</div>
-                <div class="stat-label">Time Steps</div>
+                <div class="stat-label">Signal Cycles</div>
             </div>
             <div class="stat-card" id="stat-bottlenecks">
                 <div class="stat-value">—</div>
-                <div class="stat-label">Bottlenecks</div>
+                <div class="stat-label">Saturated Junctions</div>
             </div>
             <div class="stat-card accent" id="stat-improvement">
                 <div class="stat-value">—</div>
-                <div class="stat-label">Congestion Reduction</div>
+                <div class="stat-label">Travel Time Improvement</div>
             </div>
         </section>
 
-        <!-- ─── Graph + Controls ─── -->
         <section class="grid-2col">
             <div class="card" id="graph-card">
                 <div class="card-header">
-                    <h2>Station Graph</h2>
+                    <h2>Road Network — Intersection Graph</h2>
                     <div class="toggle-group">
-                        <button class="toggle-btn active" data-view="before" id="btn-view-before">Original</button>
-                        <button class="toggle-btn" data-view="after" id="btn-view-after">Optimized</button>
+                        <button class="toggle-btn active" data-view="before" id="btn-view-before">Pre-ATMS</button>
+                        <button class="toggle-btn" data-view="after" id="btn-view-after">Post-ATMS</button>
                     </div>
                 </div>
                 <canvas id="graph-canvas" width="700" height="450"></canvas>
                 <div class="canvas-legend" id="graph-legend">
-                    <span class="legend-item"><span class="dot entrance"></span>Entrance</span>
-                    <span class="legend-item"><span class="dot exit"></span>Exit</span>
-                    <span class="legend-item"><span class="dot gate"></span>Gate</span>
-                    <span class="legend-item"><span class="dot corridor"></span>Corridor</span>
-                    <span class="legend-item"><span class="dot platform"></span>Platform</span>
+                    <span class="legend-item"><span class="dot major_signalized"></span>Major Signalized</span>
+                    <span class="legend-item"><span class="dot signalized"></span>Signalized</span>
+                    <span class="legend-item"><span class="dot arterial_merge"></span>Arterial Merge</span>
+                    <span class="legend-item"><span class="dot flyover_merge"></span>Flyover Merge</span>
+                    <span class="legend-item"><span class="dot destination_zone"></span>Destination Zone</span>
                 </div>
             </div>
 
@@ -87,10 +85,10 @@
                     <h2>Simulation Controls</h2>
                 </div>
                 <div class="control-group">
-                    <label for="time-slider">Time Step</label>
+                    <label for="time-slider">Signal Cycle</label>
                     <div class="slider-row">
-                        <input type="range" id="time-slider" min="0" max="20" value="0" step="1">
-                        <span class="slider-value" id="time-value">t = 0</span>
+                        <input type="range" id="time-slider" min="0" max="30" value="0" step="1">
+                        <span class="slider-value" id="time-value">Cycle 0</span>
                     </div>
                 </div>
                 <div class="control-group">
@@ -110,57 +108,132 @@
                 </div>
                 <hr class="divider">
                 <div class="card-header sub">
-                    <h3>Current Distribution</h3>
+                    <h3>Current Corridor Load</h3>
                 </div>
                 <div class="distribution-list" id="distribution-list">
-                    <!-- Filled by JS -->
+                    <div class="empty-state">Waiting for simulation data.</div>
                 </div>
             </div>
         </section>
 
-        <!-- ─── Density Heatmap ─── -->
         <section class="card full-width" id="heatmap-card">
             <div class="card-header">
-                <h2>Crowd Density Heatmap</h2>
+                <h2>Vehicle Density Heatmap</h2>
                 <div class="toggle-group">
-                    <button class="toggle-btn active" data-heatmap="before" id="btn-heat-before">Before</button>
-                    <button class="toggle-btn" data-heatmap="after" id="btn-heat-after">After</button>
+                    <button class="toggle-btn active" data-heatmap="before" id="btn-heat-before">Pre-ATMS</button>
+                    <button class="toggle-btn" data-heatmap="after" id="btn-heat-after">Post-ATMS</button>
                     <button class="toggle-btn" data-heatmap="diff" id="btn-heat-diff">Difference</button>
                 </div>
             </div>
             <canvas id="heatmap-canvas" width="900" height="350"></canvas>
         </section>
 
-        <!-- ─── Comparison Charts ─── -->
         <section class="grid-2col">
             <div class="card" id="stationary-card">
                 <div class="card-header">
-                    <h2>Stationary Distribution (π)</h2>
+                    <h2>Long-Run Intersection Utilization</h2>
                 </div>
                 <canvas id="stationary-canvas" width="500" height="300"></canvas>
             </div>
 
             <div class="card" id="mfpt-card">
                 <div class="card-header">
-                    <h2>Mean Steps to Exit</h2>
+                    <h2>Average Network Travel Time (ANTT)</h2>
                 </div>
                 <canvas id="mfpt-canvas" width="500" height="300"></canvas>
             </div>
         </section>
 
-        <!-- ─── Transition Matrix ─── -->
         <section class="card full-width" id="matrix-card">
             <div class="card-header">
-                <h2>Transition Matrix</h2>
+                <h2>Vehicle Routing Probability Matrix</h2>
                 <div class="toggle-group">
-                    <button class="toggle-btn active" data-matrix="before" id="btn-matrix-before">Original</button>
-                    <button class="toggle-btn" data-matrix="after" id="btn-matrix-after">Optimized</button>
+                    <button class="toggle-btn active" data-matrix="before" id="btn-matrix-before">Pre-ATMS</button>
+                    <button class="toggle-btn" data-matrix="after" id="btn-matrix-after">Post-ATMS</button>
                 </div>
             </div>
             <canvas id="matrix-canvas" width="700" height="500"></canvas>
         </section>
 
-        <!-- ─── Mathematical Details ─── -->
+        <section class="grid-3col">
+            <div class="card" id="architecture-card">
+                <div class="card-header">
+                    <h2>ITS Architecture</h2>
+                </div>
+                <div class="table-wrap">
+                    <table class="info-table">
+                        <thead>
+                            <tr>
+                                <th>ITS Subsystem</th>
+                                <th>Technology</th>
+                                <th>This System</th>
+                            </tr>
+                        </thead>
+                        <tbody id="architecture-table-body">
+                            <tr>
+                                <td colspan="3">Loading ITS architecture map…</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="card" id="detector-card">
+                <div class="card-header detector-header">
+                    <div>
+                        <h2>Live Detector Feed</h2>
+                        <p id="detector-scenario-label">Pre-ATMS detector telemetry</p>
+                    </div>
+                    <div class="alert-legend">
+                        <span class="alert-pill critical">Critical</span>
+                        <span class="alert-pill warning">Warning</span>
+                        <span class="alert-pill moderate">Moderate</span>
+                        <span class="alert-pill normal">Normal</span>
+                    </div>
+                </div>
+                <div class="table-wrap detector-table-wrap">
+                    <table class="info-table detector-table">
+                        <thead>
+                            <tr>
+                                <th>Junction Name</th>
+                                <th>Detector Type</th>
+                                <th>v/c Ratio</th>
+                                <th>Queue</th>
+                                <th>Alert Level</th>
+                            </tr>
+                        </thead>
+                        <tbody id="detector-feed-body">
+                            <tr>
+                                <td colspan="5">Loading detector feed…</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="card" id="atms-kpi-card">
+                <div class="card-header">
+                    <h2>ATMS KPI Dashboard</h2>
+                </div>
+                <div class="kpi-hero">
+                    <div class="kpi-eyebrow">Travel Time Improvement</div>
+                    <div class="kpi-big" id="kpi-improvement">—</div>
+                </div>
+                <div class="kpi-grid">
+                    <div class="kpi-mini">
+                        <span class="kpi-mini-label">Saturated Junctions</span>
+                        <strong id="kpi-saturated">—</strong>
+                    </div>
+                    <div class="kpi-mini">
+                        <span class="kpi-mini-label">Delay Saved / Vehicle</span>
+                        <strong id="kpi-delay">—</strong>
+                    </div>
+                </div>
+                <div class="context-badge" id="kpi-context-badge">Loading Bengaluru ATMS context…</div>
+                <div class="unit-badge-list" id="kpi-unit-badges"></div>
+            </div>
+        </section>
+
         <section class="card full-width" id="math-card">
             <div class="card-header">
                 <h2>Mathematical Foundation</h2>
@@ -168,49 +241,47 @@
             <div class="math-grid">
                 <div class="math-block">
                     <h3>Graph Model</h3>
-                    <p>The metro station is modeled as an undirected weighted graph <strong>G = (V, E, w)</strong> where:</p>
+                    <p>The ORR corridor is modeled as a weighted directed graph <strong>G = (V, E, w)</strong> where:</p>
                     <ul>
-                        <li><strong>V</strong> = set of 16 nodes (physical locations)</li>
-                        <li><strong>E</strong> = set of 25 edges (walkable paths)</li>
-                        <li><strong>w: E → ℝ⁺</strong> = edge weights (distances)</li>
+                        <li><strong>V</strong> = intersections and destination zones</li>
+                        <li><strong>E</strong> = directed road movements along the corridor</li>
+                        <li><strong>w: E → ℝ⁺</strong> = free-flow travel time in seconds</li>
                     </ul>
                 </div>
                 <div class="math-block">
                     <h3>Markov Chain</h3>
-                    <p>Crowd movement follows a discrete-time Markov chain with:</p>
+                    <p>Vehicle routing follows a discrete-time Markov chain with:</p>
                     <ul>
-                        <li><strong>State</strong> = current node of a person</li>
-                        <li><strong>T</strong> = row-stochastic transition matrix</li>
-                        <li><strong>P(t+1) = P(t) · T</strong> (evolution equation)</li>
-                        <li><strong>π = π · T</strong> (stationary distribution)</li>
+                        <li><strong>State</strong> = current intersection occupancy</li>
+                        <li><strong>T[i][j]</strong> = routing probability from junction <strong>i</strong> to <strong>j</strong></li>
+                        <li><strong>P(t+1) = P(t) · T</strong> over signal cycles</li>
+                        <li><strong>MFPT</strong> = ANTT to destination zones</li>
                     </ul>
                 </div>
                 <div class="math-block">
-                    <h3>Optimization</h3>
-                    <p>Three strategies applied to reduce congestion:</p>
+                    <h3>ATMS Optimization</h3>
+                    <p>Adaptive signal timing combines local green extension with downstream coordination:</p>
                     <ul>
-                        <li><strong>Exit Acceleration</strong> — Stronger bias toward exits</li>
-                        <li><strong>Bottleneck Relief</strong> — Redistribute flow away from congested nodes</li>
-                        <li><strong>Path Splitting</strong> — Balance load across parallel corridors</li>
+                        <li><strong>Self-loop relief</strong> = shorter red-phase hold at bottlenecks</li>
+                        <li><strong>Downstream coordination</strong> = more flow toward viable exits</li>
+                        <li><strong>v/c monitoring</strong> = saturation and queue-alert detection</li>
                     </ul>
                 </div>
             </div>
         </section>
 
-        <!-- ─── Key Observations ─── -->
         <section class="card full-width" id="observations-card">
             <div class="card-header">
-                <h2>Key Observations</h2>
+                <h2>Operational Observations</h2>
             </div>
             <div class="observations" id="observations-content">
-                <!-- Filled by JS -->
+                <div class="empty-state">Waiting for ITS observations…</div>
             </div>
         </section>
     </main>
 
-    <!-- ═══ FOOTER ═══ -->
     <footer id="app-footer">
-        <p>Mathematical Modelling — Crowd Movement using Markov Chains & Graph Theory</p>
+        <p>ITS Urban Traffic Management System — Bengaluru Outer Ring Road ATMS Simulation</p>
     </footer>
 
     <script src="app.js"></script>

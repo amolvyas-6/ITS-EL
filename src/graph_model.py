@@ -1,185 +1,253 @@
-"""
-graph_model.py — Graph Construction & Representation
-
-Models a metro station environment as a weighted, undirected graph.
-
-Nodes represent physical locations:
-  - Entrances (where people enter the system)
-  - Platforms (boarding/alighting areas)
-  - Corridors (connecting paths)
-  - Ticket counters / gates
-  - Exits (where people leave the system)
-
-Edges represent walkable paths with optional distance/capacity weights.
-"""
+"""Traffic graph construction and metadata for Bengaluru ORR corridor."""
 
 import numpy as np
 import networkx as nx
 
 
-# ─── Node Definitions ───────────────────────────────────────────────────────
-
 NODE_DATA = {
-    # ID: (label, type, position_x, position_y)
-    0:  ("Entrance A",       "entrance",  0.0,  3.0),
-    1:  ("Entrance B",       "entrance",  0.0,  7.0),
-    2:  ("Security Check",   "gate",      2.0,  5.0),
-    3:  ("Ticket Counter 1", "gate",      3.5,  3.5),
-    4:  ("Ticket Counter 2", "gate",      3.5,  6.5),
-    5:  ("Main Lobby",       "corridor",  5.0,  5.0),
-    6:  ("Corridor North",   "corridor",  6.5,  7.5),
-    7:  ("Corridor South",   "corridor",  6.5,  2.5),
-    8:  ("Waiting Area",     "corridor",  7.5,  5.0),
-    9:  ("Escalator Up",     "corridor",  8.5,  3.5),
-    10: ("Escalator Down",   "corridor",  8.5,  6.5),
-    11: ("Platform 1",       "platform",  10.0, 2.0),
-    12: ("Platform 2",       "platform",  10.0, 5.0),
-    13: ("Platform 3",       "platform",  10.0, 8.0),
-    14: ("Exit West",        "exit",      12.0, 3.5),
-    15: ("Exit East",        "exit",      12.0, 6.5),
+    0: ("Silk Board Junction", "major_signalized", 0.15, 0.50),
+    1: ("HSR Layout Signal", "signalized", 0.25, 0.35),
+    2: ("Agara Junction", "signalized", 0.25, 0.65),
+    3: ("BTM Layout Signal", "signalized", 0.38, 0.25),
+    4: ("Koramangala 5th Block", "signalized", 0.38, 0.50),
+    5: ("Koramangala 1st Block", "signalized", 0.38, 0.70),
+    6: ("Sony World Signal", "major_signalized", 0.52, 0.20),
+    7: ("Intermediate Ring Road", "arterial_merge", 0.52, 0.45),
+    8: ("Domlur Flyover", "flyover_merge", 0.52, 0.65),
+    9: ("Marathahalli Bridge", "major_signalized", 0.65, 0.20),
+    10: ("Outer Ring Road East", "arterial_merge", 0.65, 0.45),
+    11: ("Bellandur Signal", "signalized", 0.65, 0.70),
+    12: ("Sarjapur Road Junction", "major_signalized", 0.78, 0.30),
+    13: ("Kadubeesanahalli Signal", "signalized", 0.78, 0.55),
+    14: ("Whitefield Road", "destination_zone", 0.90, 0.20),
+    15: ("Electronic City", "destination_zone", 0.90, 0.50),
+    16: ("Hosur Road Toll", "destination_zone", 0.90, 0.75),
+    17: ("CBD (MG Road)", "destination_zone", 0.05, 0.50),
 }
 
-# ─── Edge Definitions ───────────────────────────────────────────────────────
-# (node_i, node_j, distance_weight)
 
-EDGE_DATA = [
-    (0,  2,  2.5),   # Entrance A → Security
-    (1,  2,  2.5),   # Entrance B → Security
-    (2,  3,  1.8),   # Security → Ticket 1
-    (2,  4,  1.8),   # Security → Ticket 2
-    (3,  5,  2.0),   # Ticket 1 → Main Lobby
-    (4,  5,  2.0),   # Ticket 2 → Main Lobby
-    (5,  6,  2.0),   # Main Lobby → Corridor North
-    (5,  7,  2.0),   # Main Lobby → Corridor South
-    (5,  8,  2.5),   # Main Lobby → Waiting Area
-    (6,  8,  1.5),   # Corridor North → Waiting
-    (7,  8,  1.5),   # Corridor South → Waiting
-    (6, 10,  2.0),   # Corridor North → Escalator Down
-    (7,  9,  2.0),   # Corridor South → Escalator Up
-    (8,  9,  1.5),   # Waiting → Escalator Up
-    (8, 10,  1.5),   # Waiting → Escalator Down
-    (9, 11,  2.0),   # Escalator Up → Platform 1
-    (9, 12,  1.5),   # Escalator Up → Platform 2
-    (10, 12, 1.5),   # Escalator Down → Platform 2
-    (10, 13, 2.0),   # Escalator Down → Platform 3
-    (11, 14, 2.0),   # Platform 1 → Exit West
-    (12, 14, 2.0),   # Platform 2 → Exit West
-    (12, 15, 2.0),   # Platform 2 → Exit East
-    (13, 15, 2.0),   # Platform 3 → Exit East
-    (11, 12, 2.5),   # Platform 1 ↔ Platform 2
-    (12, 13, 2.5),   # Platform 2 ↔ Platform 3
+TYPE_CAPACITY = {
+    "major_signalized": 3600,
+    "signalized": 2400,
+    "arterial_merge": 3000,
+    "flyover_merge": 3600,
+    "destination_zone": 9999,
+}
+
+
+ROAD_CAPACITY = {
+    node_id: TYPE_CAPACITY[node_type]
+    for node_id, (_, node_type, _, _) in NODE_DATA.items()
+}
+
+
+SIGNAL_NODES = [
+    node_id
+    for node_id, (_, node_type, _, _) in NODE_DATA.items()
+    if "signalized" in node_type
 ]
 
 
+DESTINATION_NODES = {
+    node_id
+    for node_id, (_, node_type, _, _) in NODE_DATA.items()
+    if node_type == "destination_zone"
+}
+
+
+PRIMARY_EDGE_DATA = [
+    (0, 1, 90, 1800),
+    (0, 2, 85, 1800),
+    (1, 3, 75, 1400),
+    (1, 4, 80, 1600),
+    (2, 4, 70, 1400),
+    (2, 5, 65, 1200),
+    (3, 6, 110, 1600),
+    (4, 7, 95, 1800),
+    (5, 8, 100, 1400),
+    (6, 9, 120, 2000),
+    (7, 10, 85, 1800),
+    (7, 8, 70, 1200),
+    (8, 11, 90, 1400),
+    (9, 12, 130, 2000),
+    (10, 12, 95, 1800),
+    (10, 13, 80, 1600),
+    (11, 13, 75, 1400),
+    (11, 16, 110, 1200),
+    (12, 14, 140, 2000),
+    (13, 15, 120, 1800),
+    (0, 17, 150, 2200),
+    (3, 17, 160, 1600),
+    (6, 17, 180, 1800),
+    (14, 14, 0, 0),
+    (15, 15, 0, 0),
+    (16, 16, 0, 0),
+    (17, 17, 0, 0),
+]
+
+
+def _is_bidirectional_candidate(source, target):
+    if source == target:
+        return False
+    if source in DESTINATION_NODES or target in DESTINATION_NODES:
+        return False
+    return True
+
+
+def _build_directed_edges():
+    directed_edges = {}
+    for source, target, travel_time, capacity in PRIMARY_EDGE_DATA:
+        directed_edges[(source, target)] = {
+            "weight": float(travel_time),
+            "capacity": float(capacity),
+        }
+
+        if _is_bidirectional_candidate(source, target):
+            reverse_capacity = float(capacity) * 0.8
+            directed_edges.setdefault(
+                (target, source),
+                {"weight": float(travel_time), "capacity": reverse_capacity},
+            )
+
+    return [
+        (source, target, attrs["weight"], attrs["capacity"])
+        for (source, target), attrs in sorted(directed_edges.items())
+    ]
+
+
+EDGE_DATA = _build_directed_edges()
+
+
 def build_graph():
-    """
-    Construct the metro station graph using NetworkX.
+    """Construct the directed Bengaluru ORR traffic graph."""
+    graph = nx.DiGraph()
 
-    Returns:
-        G (nx.Graph): The metro station graph with node/edge attributes.
-    """
-    G = nx.Graph()
+    for node_id, (label, node_type, x, y) in NODE_DATA.items():
+        graph.add_node(
+            node_id,
+            label=label,
+            node_type=node_type,
+            pos=(x, y),
+            capacity=ROAD_CAPACITY[node_id],
+        )
 
-    # Add nodes with attributes
-    for node_id, (label, ntype, x, y) in NODE_DATA.items():
-        G.add_node(node_id, label=label, node_type=ntype, pos=(x, y))
+    for source, target, travel_time, capacity in EDGE_DATA:
+        graph.add_edge(source, target, weight=travel_time, capacity=capacity)
 
-    # Add edges with distance weights
-    for u, v, w in EDGE_DATA:
-        G.add_edge(u, v, weight=w)
-
-    return G
-
-
-def get_adjacency_matrix(G):
-    """
-    Return the adjacency matrix as a numpy array.
-
-    Args:
-        G (nx.Graph): The metro station graph.
-
-    Returns:
-        A (np.ndarray): Binary adjacency matrix of shape (n, n).
-        node_list (list): Ordered list of node IDs.
-    """
-    node_list = sorted(G.nodes())
-    A = nx.adjacency_matrix(G, nodelist=node_list).toarray().astype(float)
-    return A, node_list
+    return graph
 
 
-def get_weighted_adjacency_matrix(G):
-    """
-    Return the weighted adjacency matrix (edge weights = distances).
-
-    Args:
-        G (nx.Graph): The metro station graph.
-
-    Returns:
-        W (np.ndarray): Weighted adjacency matrix of shape (n, n).
-        node_list (list): Ordered list of node IDs.
-    """
-    node_list = sorted(G.nodes())
-    n = len(node_list)
-    W = np.zeros((n, n))
-
-    for u, v, data in G.edges(data=True):
-        i = node_list.index(u)
-        j = node_list.index(v)
-        W[i][j] = data.get('weight', 1.0)
-        W[j][i] = data.get('weight', 1.0)
-
-    return W, node_list
+def get_adjacency_matrix(graph):
+    """Return binary directed adjacency matrix and ordered node IDs."""
+    node_list = sorted(graph.nodes())
+    adjacency = nx.to_numpy_array(graph, nodelist=node_list, dtype=float)
+    adjacency = (adjacency > 0).astype(float)
+    return adjacency, node_list
 
 
-def get_node_labels(G):
-    """Return a dict mapping node_id → label string."""
-    return {n: G.nodes[n]['label'] for n in G.nodes()}
+def get_weighted_adjacency_matrix(graph):
+    """Return directed weighted adjacency matrix and ordered node IDs."""
+    node_list = sorted(graph.nodes())
+    weighted = nx.to_numpy_array(
+        graph,
+        nodelist=node_list,
+        dtype=float,
+        weight="weight",
+    )
+    return weighted, node_list
 
 
-def get_node_types(G):
-    """Return a dict mapping node_id → node_type string."""
-    return {n: G.nodes[n]['node_type'] for n in G.nodes()}
+def get_node_labels(graph):
+    """Return mapping node_id -> intersection label."""
+    return {node: graph.nodes[node]["label"] for node in graph.nodes()}
 
 
-def get_node_positions(G):
-    """Return a dict mapping node_id → (x, y) position tuple."""
-    return {n: G.nodes[n]['pos'] for n in G.nodes()}
+def get_node_types(graph):
+    """Return mapping node_id -> node type."""
+    return {node: graph.nodes[node]["node_type"] for node in graph.nodes()}
 
 
-def print_graph_info(G):
-    """Print summary information about the graph."""
+def get_node_positions(graph):
+    """Return mapping node_id -> dashboard position (x, y)."""
+    return {node: graph.nodes[node]["pos"] for node in graph.nodes()}
+
+
+def get_traffic_node_metadata(graph):
+    """Return ITS-oriented metadata for each intersection node."""
+    metadata = {}
+
+    for node in graph.nodes():
+        node_type = graph.nodes[node]["node_type"]
+        label = graph.nodes[node]["label"]
+
+        if node_type == "major_signalized":
+            detector_type = "ANPR_Camera"
+        elif "signalized" in node_type:
+            detector_type = "Inductive_Loop"
+        elif node_type == "destination_zone":
+            detector_type = "None"
+        else:
+            detector_type = "None"
+
+        if "signalized" in node_type:
+            its_subsystem = "ATMS"
+        elif "merge" in node_type:
+            its_subsystem = "AVCS"
+        else:
+            its_subsystem = "ATIS_Gantry"
+
+        metadata[node] = {
+            "label": label,
+            "type": node_type,
+            "its_subsystem": its_subsystem,
+            "detector_type": detector_type,
+            "signal_phase_capable": "signalized" in node_type,
+        }
+
+    return metadata
+
+
+def print_graph_info(graph):
+    """Print summary information for the directed road network."""
     print("=" * 60)
-    print("METRO STATION GRAPH — SUMMARY")
+    print("BENGALURU ORR TRAFFIC GRAPH - SUMMARY")
     print("=" * 60)
-    print(f"  Nodes: {G.number_of_nodes()}")
-    print(f"  Edges: {G.number_of_edges()}")
-    print(f"  Density: {nx.density(G):.4f}")
-    print()
+    print(f"  Nodes: {graph.number_of_nodes()}")
+    print(f"  Directed edges: {graph.number_of_edges()}")
+    print(f"  Density: {nx.density(graph):.4f}")
 
-    types = {}
-    for n in G.nodes():
-        t = G.nodes[n]['node_type']
-        types.setdefault(t, []).append(G.nodes[n]['label'])
+    node_types = {}
+    for node in graph.nodes():
+        ntype = graph.nodes[node]["node_type"]
+        node_types.setdefault(ntype, []).append(graph.nodes[node]["label"])
 
-    for t, nodes in types.items():
-        print(f"  [{t.upper()}] ({len(nodes)} nodes)")
-        for name in nodes:
-            print(f"    • {name}")
-    print()
+    print("\n  Node groups:")
+    for ntype, labels in node_types.items():
+        print(f"    [{ntype}] ({len(labels)})")
 
-    # Degree information
-    degrees = dict(G.degree())
-    max_deg_node = max(degrees, key=degrees.get)
-    print(f"  Max degree: Node {max_deg_node} "
-          f"({G.nodes[max_deg_node]['label']}) — degree {degrees[max_deg_node]}")
-    print(f"  Avg degree: {np.mean(list(degrees.values())):.2f}")
+    in_degrees = dict(graph.in_degree())
+    out_degrees = dict(graph.out_degree())
+    max_out = max(out_degrees, key=out_degrees.get)
+    max_in = max(in_degrees, key=in_degrees.get)
+
+    print("\n  Degree highlights:")
+    print(
+        f"    Max out-degree: Node {max_out} "
+        f"({graph.nodes[max_out]['label']}) -> {out_degrees[max_out]}"
+    )
+    print(
+        f"    Max in-degree: Node {max_in} "
+        f"({graph.nodes[max_in]['label']}) -> {in_degrees[max_in]}"
+    )
+    print(f"    Avg out-degree: {np.mean(list(out_degrees.values())):.2f}")
+    print(f"    Avg in-degree: {np.mean(list(in_degrees.values())):.2f}")
     print("=" * 60)
 
 
 if __name__ == "__main__":
-    G = build_graph()
-    print_graph_info(G)
+    traffic_graph = build_graph()
+    print_graph_info(traffic_graph)
 
-    A, nodes = get_adjacency_matrix(G)
-    print("\nAdjacency Matrix:")
-    print(A)
+    adjacency, ordered_nodes = get_adjacency_matrix(traffic_graph)
+    print("\nAdjacency Matrix shape:", adjacency.shape)
+    print("Ordered nodes:", ordered_nodes)

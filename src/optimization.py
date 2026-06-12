@@ -1,339 +1,297 @@
-"""
-optimization.py — Flow Optimization Module
-
-Modifies transition probabilities to:
-  1. Reduce congestion at bottleneck nodes
-  2. Improve overall flow toward exits
-  3. Balance load across parallel paths
-
-Optimization strategies:
-  - Bottleneck relief: Redistribute probability away from congested nodes
-  - Exit acceleration: Increase probability of exit-ward transitions
-  - Path splitting: Balance flow across parallel corridors
-  - Combined: Apply all strategies together
-
-Each strategy produces a new transition matrix that can be compared
-with the original using the simulation engine.
-"""
+"""Adaptive traffic signal optimization for the ORR Markov model."""
 
 import numpy as np
-import networkx as nx
-from src.markov_model import (
-    build_transition_matrix_biased,
-    compute_stationary_distribution,
-    validate_transition_matrix,
-    compute_exit_distances,
-)
+
+from src.graph_model import ROAD_CAPACITY
+from src.markov_model import compute_exit_distances, validate_transition_matrix
 
 
-def identify_bottlenecks(sim, top_k=3):
-    """
-    Identify the top-k bottleneck nodes from simulation results.
-
-    A bottleneck is a node with consistently high density across time.
-
-    Args:
-        sim: A completed CrowdSimulation object.
-        top_k (int): Number of bottlenecks to return.
-
-    Returns:
-        bottlenecks (list of dict): Top bottleneck nodes with metadata.
-    """
+def identify_bottlenecks(sim, top_k=3, start_timestep=1):
+    """Rank bottlenecks by operational peak v/c ratio after the initial load injection."""
+    peak_vc = sim.get_peak_vc_over_time(start_timestep=start_timestep)
     flow = sim.compute_total_flow_through()
-    peaks = sim.get_peak_congestion_over_time()
 
-    # Score = total flow × peak density
     scores = {}
     for node in sim.node_list:
-        ntype = sim.G.nodes[node]['node_type']
-        if ntype in ('exit', 'entrance'):
-            continue  # Skip terminal nodes
-        total_flow = flow[node]
-        peak_density, peak_t = peaks[node]
-        scores[node] = total_flow * peak_density
+        node_type = sim.G.nodes[node]["node_type"]
+        if node_type == "destination_zone":
+            continue
+        score = peak_vc[node][0]
+        scores[node] = score
 
-    sorted_nodes = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
 
     bottlenecks = []
-    for node, score in sorted_nodes[:top_k]:
-        bottlenecks.append({
-            'node_id': node,
-            'label': sim.labels[node],
-            'type': sim.G.nodes[node]['node_type'],
-            'score': score,
-            'peak_density': peaks[node][0],
-            'peak_timestep': peaks[node][1],
-            'total_flow': flow[node],
-        })
+    for node, score in ranked[:top_k]:
+        bottlenecks.append(
+            {
+                "node_id": node,
+                "label": sim.labels[node],
+                "type": sim.G.nodes[node]["node_type"],
+                "score": float(score),
+                "peak_v_c": float(peak_vc[node][0]),
+                "peak_timestep": int(peak_vc[node][1]),
+                "total_flow": float(flow[node]),
+            }
+        )
 
     return bottlenecks
 
 
-def optimize_bottleneck_relief(G, T_original, node_list, bottleneck_nodes,
-                                relief_factor=0.5):
-    """
-    Reduce transition probability INTO bottleneck nodes.
+def _downstream_priority(G, source_node, target_node, exit_distances, coordination_factor):
+    """Score downstream candidates by proximity to destinations and corridor relief value."""
+    edge_data = G.get_edge_data(source_node, target_node, default={})
+    travel_time = float(edge_data.get("weight", 1.0))
+    exit_distance = float(exit_distances.get(target_node, travel_time))
+    node_type = G.nodes[target_node]["node_type"]
 
-    For each node that transitions into a bottleneck, redistribute some
-    probability to other non-bottleneck neighbours.
+    distance_score = 1.0 / (travel_time + exit_distance + 1.0)
+    if node_type == "destination_zone":
+        relief_score = coordination_factor * 1.5
+    else:
+        relief_score = coordination_factor / max(float(ROAD_CAPACITY.get(target_node, 1.0)), 1.0)
 
-    Args:
-        G: Station graph.
-        T_original: Original transition matrix.
-        node_list: Ordered node IDs.
-        bottleneck_nodes (list): Node IDs identified as bottlenecks.
-        relief_factor (float): Fraction of probability to redistribute
-            (0 = no change, 1 = avoid bottleneck entirely).
-
-    Returns:
-        T_opt (np.ndarray): Optimized transition matrix.
-    """
-    T_opt = T_original.copy()
-    n = len(node_list)
-
-    bottleneck_indices = [node_list.index(b) for b in bottleneck_nodes]
-
-    for i in range(n):
-        node = node_list[i]
-        if G.nodes[node]['node_type'] == 'exit':
-            continue
-
-        # Find transitions to bottleneck nodes
-        bottleneck_prob = 0.0
-        non_bottleneck_indices = []
-
-        for j in range(n):
-            if T_opt[i][j] > 1e-8:
-                if j in bottleneck_indices and j != i:
-                    bottleneck_prob += T_opt[i][j]
-                elif j != i:
-                    non_bottleneck_indices.append(j)
-
-        if bottleneck_prob < 1e-8 or len(non_bottleneck_indices) == 0:
-            continue
-
-        # Redistribute
-        relief_amount = bottleneck_prob * relief_factor
-        bonus_per_node = relief_amount / len(non_bottleneck_indices)
-
-        for j in bottleneck_indices:
-            if T_opt[i][j] > 1e-8 and j != i:
-                T_opt[i][j] *= (1 - relief_factor)
-
-        for j in non_bottleneck_indices:
-            T_opt[i][j] += bonus_per_node
-
-    # Re-normalize rows
-    for i in range(n):
-        row_sum = T_opt[i].sum()
-        if row_sum > 0:
-            T_opt[i] /= row_sum
-
-    validate_transition_matrix(T_opt, "T_bottleneck_relief")
-    return T_opt
+    return distance_score + relief_score
 
 
-def optimize_exit_acceleration(G, T_original, node_list, accel_factor=1.5):
-    """
-    Increase transition probability toward exits globally.
+def _redistribute_probability(
+    G,
+    row,
+    source_node,
+    node_list,
+    released_mass,
+    exit_distances,
+    coordination_factor,
+    excluded_indices=None,
+):
+    """Redistribute released probability mass to feasible downstream alternatives."""
+    if excluded_indices is None:
+        excluded_indices = set()
 
-    Multiplies the exit-ward bias by an acceleration factor.
+    candidate_indices = [
+        j
+        for j, probability in enumerate(row)
+        if j not in excluded_indices and probability > 1e-9 and G.has_edge(source_node, node_list[j])
+    ]
 
-    Args:
-        G: Station graph.
-        T_original: Original transition matrix.
-        node_list: Ordered node IDs.
-        accel_factor (float): Multiplier for exit-seeking behavior.
+    if not candidate_indices or released_mass <= 0:
+        return False
 
-    Returns:
-        T_opt (np.ndarray): Optimized transition matrix.
-    """
-    # Rebuild with stronger exit bias
-    T_opt, _ = build_transition_matrix_biased(
-        G,
-        exit_bias=2.0 * accel_factor,
-        self_loop_factor=0.05  # Reduce loitering
+    scores = np.array(
+        [
+            _downstream_priority(
+                G,
+                source_node,
+                node_list[j],
+                exit_distances,
+                coordination_factor,
+            )
+            for j in candidate_indices
+        ],
+        dtype=float,
     )
-    validate_transition_matrix(T_opt, "T_exit_accel")
-    return T_opt
+
+    score_sum = float(scores.sum())
+    if score_sum <= 0:
+        return False
+
+    scores = scores / score_sum
+    for local_idx, j in enumerate(candidate_indices):
+        row[j] += released_mass * scores[local_idx]
+
+    return True
 
 
-def optimize_path_splitting(G, T_original, node_list):
-    """
-    Balance flow across parallel paths.
+def _normalize_row(row, self_index):
+    row_sum = float(row.sum())
+    if row_sum <= 0:
+        row[:] = 0.0
+        row[self_index] = 1.0
+        return row
+    return row / row_sum
 
-    When a node has multiple neighbours leading toward exits, equalize
-    the probabilities more to prevent one path from getting overloaded.
 
-    Args:
-        G: Station graph.
-        T_original: Original transition matrix.
-        node_list: Ordered node IDs.
+def optimize_combined(
+    G,
+    T_original,
+    node_list,
+    bottleneck_nodes,
+    green_extension_factor=0.4,
+    downstream_coordination_factor=1.3,
+    **legacy_kwargs,
+):
+    """Apply adaptive signal timing and downstream coordination."""
+    if "relief_factor" in legacy_kwargs:
+        green_extension_factor = legacy_kwargs["relief_factor"]
+    if "accel_factor" in legacy_kwargs:
+        downstream_coordination_factor = legacy_kwargs["accel_factor"]
 
-    Returns:
-        T_opt (np.ndarray): Optimized transition matrix.
-    """
-    T_opt = T_original.copy()
-    n = len(node_list)
+    print("\n  Applying adaptive signal timing optimization...")
+    optimized = T_original.copy()
 
-    exit_nodes = [nd for nd in G.nodes() if G.nodes[nd]['node_type'] == 'exit']
-    dist_to_exit = compute_exit_distances(G, exit_nodes)
+    index_by_node = {node: idx for idx, node in enumerate(node_list)}
+    destination_nodes = {
+        node
+        for node in G.nodes()
+        if G.nodes[node].get("node_type") == "destination_zone"
+    }
+    exit_distances = compute_exit_distances(G, list(destination_nodes))
+    upstream_diversion_factor = 0.25 * (downstream_coordination_factor / 1.3)
 
-    for i in range(n):
-        node = node_list[i]
-        if G.nodes[node]['node_type'] == 'exit':
+    for bottleneck in bottleneck_nodes:
+        if bottleneck not in index_by_node or bottleneck in destination_nodes:
             continue
 
-        # Group neighbours by their distance bucket to exit
-        neighbours = list(G.neighbors(node))
-        forward_neighbours = []
-        other_neighbours = []
+        i = index_by_node[bottleneck]
+        row = optimized[i].copy()
 
-        my_dist = dist_to_exit.get(node, float('inf'))
+        self_loop = float(row[i])
+        released_mass = self_loop * float(green_extension_factor)
+        row[i] = max(0.0, self_loop - released_mass)
 
-        for nb in neighbours:
-            nb_dist = dist_to_exit.get(nb, float('inf'))
-            j = node_list.index(nb)
-            if nb_dist < my_dist:
-                forward_neighbours.append(j)
-            else:
-                other_neighbours.append(j)
+        redistributed = _redistribute_probability(
+            G,
+            row,
+            bottleneck,
+            node_list,
+            released_mass,
+            exit_distances,
+            downstream_coordination_factor,
+            excluded_indices={i},
+        )
+        if not redistributed:
+            row[i] += released_mass
 
-        if len(forward_neighbours) <= 1:
-            continue  # Nothing to balance
+        optimized[i] = _normalize_row(row, i)
 
-        # Equalize forward-neighbour probabilities
-        total_forward_prob = sum(T_opt[i][j] for j in forward_neighbours)
-        equal_prob = total_forward_prob / len(forward_neighbours)
+        for upstream_node in G.predecessors(bottleneck):
+            if upstream_node in destination_nodes:
+                continue
 
-        # Blend: 70% equalized + 30% original
-        blend = 0.7
-        for j in forward_neighbours:
-            T_opt[i][j] = blend * equal_prob + (1 - blend) * T_opt[i][j]
+            upstream_index = index_by_node[upstream_node]
+            upstream_row = optimized[upstream_index].copy()
+            target_probability = float(upstream_row[i])
+            if target_probability <= 1e-9:
+                continue
 
-    # Re-normalize rows
-    for i in range(n):
-        row_sum = T_opt[i].sum()
-        if row_sum > 0:
-            T_opt[i] /= row_sum
+            released_upstream_mass = target_probability * upstream_diversion_factor
+            upstream_row[i] = max(0.0, target_probability - released_upstream_mass)
+            redistributed = _redistribute_probability(
+                G,
+                upstream_row,
+                upstream_node,
+                node_list,
+                released_upstream_mass,
+                exit_distances,
+                downstream_coordination_factor,
+                excluded_indices={upstream_index, i},
+            )
+            if not redistributed:
+                upstream_row[i] += released_upstream_mass
 
-    validate_transition_matrix(T_opt, "T_path_split")
-    return T_opt
+            optimized[upstream_index] = _normalize_row(upstream_row, upstream_index)
 
+    for node in destination_nodes:
+        idx = index_by_node[node]
+        optimized[idx, :] = 0.0
+        optimized[idx, idx] = 1.0
 
-def optimize_combined(G, T_original, node_list, bottleneck_nodes,
-                       relief_factor=0.4, accel_factor=1.3):
-    """
-    Apply all optimization strategies in sequence.
-
-    1. Exit acceleration (rebuild with stronger bias)
-    2. Bottleneck relief
-    3. Path splitting
-
-    Args:
-        G: Station graph.
-        T_original: Original transition matrix.
-        node_list: Ordered node IDs.
-        bottleneck_nodes: Identified bottleneck node IDs.
-        relief_factor: Bottleneck relief strength.
-        accel_factor: Exit acceleration strength.
-
-    Returns:
-        T_opt (np.ndarray): Fully optimized transition matrix.
-    """
-    print("\n  Applying combined optimization...")
-
-    # Step 1: Exit acceleration
-    T1 = optimize_exit_acceleration(G, T_original, node_list, accel_factor)
-    print("    ✓ Exit acceleration applied")
-
-    # Step 2: Bottleneck relief
-    T2 = optimize_bottleneck_relief(G, T1, node_list, bottleneck_nodes,
-                                     relief_factor)
-    print("    ✓ Bottleneck relief applied")
-
-    # Step 3: Path splitting
-    T3 = optimize_path_splitting(G, T2, node_list)
-    print("    ✓ Path splitting applied")
-
-    return T3
+    validate_transition_matrix(optimized, "T_adaptive_signal")
+    print("    [ok] Adaptive green extension applied")
+    print("    [ok] Downstream coordination applied")
+    return optimized
 
 
-def compare_distributions(pi_before, pi_after, node_list, labels,
-                           title="Optimization Comparison"):
-    """
-    Compare two stationary distributions and print improvements.
-
-    Args:
-        pi_before: Stationary distribution before optimization.
-        pi_after: Stationary distribution after optimization.
-        node_list: Ordered node IDs.
-        labels: Dict of node_id → label.
-        title: Title for the comparison.
-
-    Returns:
-        improvements (dict): node_id → (before, after, change%).
-    """
+def compare_distributions(
+    pi_before,
+    pi_after,
+    node_list,
+    labels,
+    title="Intersection Utilization Comparison",
+):
+    """Compare pre/post stationary utilization distributions."""
     print(f"\n{'=' * 60}")
     print(f"  {title}")
     print(f"{'=' * 60}")
-    print(f"\n  {'Node':<22s} {'Before':>8s} {'After':>8s} {'Change':>10s}")
-    print(f"  {'─' * 50}")
+    print(f"\n  {'Node':<28s} {'Before':>8s} {'After':>8s} {'Change':>10s}")
+    print(f"  {'-' * 58}")
 
     improvements = {}
     for i, node in enumerate(node_list):
-        before = pi_before[i]
-        after = pi_after[i]
-        if before > 1e-8:
-            change_pct = ((after - before) / before) * 100
-        else:
-            change_pct = 0.0
+        before = float(pi_before[i])
+        after = float(pi_after[i])
+        change_pct = ((after - before) / before) * 100 if before > 1e-8 else 0.0
 
         improvements[node] = (before, after, change_pct)
-
-        marker = ""
-        if abs(change_pct) > 5:
-            marker = " ▼" if change_pct < 0 else " ▲"
-
-        print(f"  {labels.get(node, f'Node {node}'):<22s} "
-              f"{before:>8.4f} {after:>8.4f} {change_pct:>+8.1f}%{marker}")
+        print(
+            f"  {labels.get(node, f'Node {node}'):<28s} "
+            f"{before:>8.4f} {after:>8.4f} {change_pct:>+8.1f}%"
+        )
 
     print(f"\n{'=' * 60}")
     return improvements
 
 
-def print_optimization_report(bottlenecks, sim_before, sim_after, node_list, labels):
-    """Print a comprehensive optimization report."""
-    print("\n" + "═" * 60)
-    print("  OPTIMIZATION REPORT")
-    print("═" * 60)
+def print_optimization_report(
+    bottlenecks,
+    sim_before,
+    sim_after,
+    node_list,
+    labels,
+    mfpt_before=None,
+    mfpt_after=None,
+):
+    """Print and return optimization report for ATMS intervention."""
+    before_peaks = sim_before.get_peak_vc_over_time(start_timestep=1)
+    after_peaks = sim_after.get_peak_vc_over_time(start_timestep=1)
 
-    print("\n  Identified Bottlenecks:")
-    for b in bottlenecks:
-        print(f"    ⚠ {b['label']:20s}  score={b['score']:.4f}  "
-              f"peak={b['peak_density']:.4f} at t={b['peak_timestep']}")
+    v_c_before = {
+        b["node_id"]: float(before_peaks[b["node_id"]][0])
+        for b in bottlenecks
+    }
+    v_c_after = {
+        b["node_id"]: float(after_peaks[b["node_id"]][0])
+        for b in bottlenecks
+    }
 
-    # Compare convergence speed
-    conv_before = sim_before.compute_convergence()
-    conv_after = sim_after.compute_convergence()
-    print(f"\n  Convergence Speed:")
-    print(f"    Before: {'step ' + str(conv_before) if conv_before else 'not converged'}")
-    print(f"    After:  {'step ' + str(conv_after) if conv_after else 'not converged'}")
+    if mfpt_before and mfpt_after:
+        before_values = [value for value in mfpt_before.values() if value > 0]
+        after_values = [value for value in mfpt_after.values() if value > 0]
+        avg_before = float(np.mean(before_values)) if before_values else 0.0
+        avg_after = float(np.mean(after_values)) if after_values else 0.0
+        if avg_before > 0:
+            antt_improvement_percent = ((avg_before - avg_after) / avg_before) * 100.0
+        else:
+            antt_improvement_percent = 0.0
+    else:
+        antt_improvement_percent = 0.0
 
-    # Compare peak congestion
-    peaks_before = sim_before.get_peak_congestion_over_time()
-    peaks_after = sim_after.get_peak_congestion_over_time()
+    report = {
+        "strategy": "Adaptive Signal Timing with Downstream Coordination",
+        "intervention_type": "ATMS - Centralized Signal Control",
+        "bottleneck_intersections": [b["label"] for b in bottlenecks],
+        "v_c_before": {str(node): ratio for node, ratio in v_c_before.items()},
+        "v_c_after": {str(node): ratio for node, ratio in v_c_after.items()},
+        "antt_improvement_percent": float(antt_improvement_percent),
+    }
 
-    print(f"\n  Peak Congestion Changes:")
-    for b in bottlenecks:
-        node = b['node_id']
-        pb = peaks_before[node][0]
-        pa = peaks_after[node][0]
-        reduction = ((pb - pa) / pb) * 100 if pb > 1e-8 else 0
-        print(f"    {b['label']:20s}: {pb:.4f} → {pa:.4f}  "
-              f"({reduction:+.1f}% reduction)")
+    print("\n" + "=" * 60)
+    print("OPTIMIZATION REPORT - ADAPTIVE SIGNAL TIMING")
+    print("=" * 60)
+    print(f"Strategy: {report['strategy']}")
+    print(f"Intervention: {report['intervention_type']}")
 
-    print("\n" + "═" * 60)
+    print("\nTop Saturated Intersections:")
+    for rank, bottleneck in enumerate(bottlenecks, start=1):
+        node = bottleneck["node_id"]
+        print(
+            f"  {rank}. {labels[node]} - "
+            f"Peak v/c before={v_c_before[node]:.3f}, after={v_c_after[node]:.3f}"
+        )
+
+    print(f"\nANTT Improvement: {report['antt_improvement_percent']:.2f}%")
+    print("=" * 60)
+    return report
 
 
 if __name__ == "__main__":
@@ -341,20 +299,17 @@ if __name__ == "__main__":
     from src.markov_model import build_transition_matrix_biased
     from src.simulation import run_scenario
 
-    G = build_graph()
-    T_orig, node_list = build_transition_matrix_biased(G)
+    graph = build_graph()
+    transition, nodes = build_transition_matrix_biased(graph)
 
-    sim_orig = run_scenario(G, T_orig, node_list, label="Original")
-    bottlenecks = identify_bottlenecks(sim_orig)
-
-    T_opt = optimize_combined(
-        G, T_orig, node_list,
-        [b['node_id'] for b in bottlenecks]
+    sim_base = run_scenario(graph, transition, nodes, label="Pre-ATMS")
+    detected = identify_bottlenecks(sim_base)
+    optimized = optimize_combined(
+        graph,
+        transition,
+        nodes,
+        [row["node_id"] for row in detected],
     )
-
-    sim_opt = run_scenario(G, T_opt, node_list, label="Optimized")
-
-    labels = {n: G.nodes[n]['label'] for n in G.nodes()}
-    pi_before = compute_stationary_distribution(T_orig)
-    pi_after = compute_stationary_distribution(T_opt)
-    compare_distributions(pi_before, pi_after, node_list, labels)
+    sim_opt = run_scenario(graph, optimized, nodes, label="Post-ATMS")
+    label_map = {node: graph.nodes[node]["label"] for node in graph.nodes()}
+    print_optimization_report(detected, sim_base, sim_opt, nodes, label_map)
